@@ -280,7 +280,7 @@
     cfg = cfg || {};
     const placeholder = cfg.placeholder || 'Gõ để tìm...';
     let selectedId = cfg.initialId || '';
-    container.innerHTML = `<div class="ssel"><input class="ssel-input" type="text" placeholder="${placeholder}" autocomplete="off" /><div class="ssel-list" style="display:none"></div></div>`;
+    container.innerHTML = `<div class="ssel"><input class="ssel-input" type="text" placeholder="${placeholder}" autocomplete="off" name="ssel-${uid('f')}" data-lpignore="true" data-1p-ignore /><div class="ssel-list" style="display:none"></div></div>`;
     const input = container.querySelector('.ssel-input');
     const list = container.querySelector('.ssel-list');
     if (selectedId){
@@ -552,7 +552,7 @@
       });
       body.innerHTML = `
         <div class="field"><label>Họ và tên</label><div id="emp-ssel"></div></div>
-        <div class="field"><label>Mã PIN cá nhân</label><input id="emp-pin" type="password" placeholder="Mặc định: 4 số cuối Số CCHN" /></div>
+        <div class="field"><label>Mã PIN cá nhân</label><input id="emp-pin" type="password" autocomplete="new-password" data-lpignore="true" data-1p-ignore placeholder="Mặc định: 4 số cuối Số CCHN" /></div>
         <button id="do-emp-login" style="width:100%">Đăng nhập</button>
         <p class="muted" style="margin-top:10px">Nếu chưa từng đổi mã PIN, hãy dùng 4 số cuối của Số CCHN của anh/chị.</p>
       `;
@@ -570,7 +570,7 @@
       };
     } else if (state._loginMode === 'admin'){
       body.innerHTML = `
-        <div class="field"><label>Mã PIN quản trị</label><input id="admin-pin" type="password" placeholder="Nhập mã PIN" /></div>
+        <div class="field"><label>Mã PIN quản trị</label><input id="admin-pin" type="password" autocomplete="new-password" data-lpignore="true" data-1p-ignore placeholder="Nhập mã PIN" /></div>
         <button id="do-admin-login" style="width:100%">Đăng nhập</button>
         <p class="muted" style="margin-top:10px">Mã PIN mặc định ban đầu: 0000 — vui lòng đổi sau khi đăng nhập lần đầu.</p>
       `;
@@ -588,7 +588,7 @@
           <div id="unit-ssel"></div>
         </div>
         <div id="unit-new-block"></div>
-        <div class="field" id="unit-pin-block" style="display:none"><label>Mã PIN của đơn vị</label><input id="unit-pin" type="password" placeholder="Nhập mã PIN" /></div>
+        <div class="field" id="unit-pin-block" style="display:none"><label>Mã PIN của đơn vị</label><input id="unit-pin" type="password" autocomplete="new-password" data-lpignore="true" data-1p-ignore placeholder="Nhập mã PIN" /></div>
         <button id="do-unit-login" style="width:100%">Tiếp tục</button>
       `;
       let selectedUnitId = '';
@@ -601,7 +601,7 @@
           if (id === '__new__'){
             newBlock.innerHTML = `
               <div class="field"><label>Tên Khoa / Phòng</label><input id="new-unit-name" placeholder="VD: Khoa Gây mê Hồi sức" /></div>
-              <div class="field"><label>Đặt mã PIN cho đơn vị (để lần sau đăng nhập)</label><input id="new-unit-pin" type="password" placeholder="VD: 4 chữ số" /></div>
+              <div class="field"><label>Đặt mã PIN cho đơn vị (để lần sau đăng nhập)</label><input id="new-unit-pin" type="password" autocomplete="new-password" data-lpignore="true" data-1p-ignore placeholder="VD: 4 chữ số" /></div>
             `;
             pinBlock.style.display = 'none';
           } else if (id){
@@ -693,9 +693,9 @@
     content.innerHTML = `
       <div class="card" style="max-width:480px">
         <h3>Đổi mã PIN của đơn vị</h3>
-        <div class="field"><label>Mã PIN hiện tại</label><input id="cp-old" type="password" /></div>
-        <div class="field"><label>Mã PIN mới</label><input id="cp-new" type="password" /></div>
-        <div class="field"><label>Nhập lại mã PIN mới</label><input id="cp-new2" type="password" /></div>
+        <div class="field"><label>Mã PIN hiện tại</label><input id="cp-old" type="password" autocomplete="new-password" data-lpignore="true" data-1p-ignore /></div>
+        <div class="field"><label>Mã PIN mới</label><input id="cp-new" type="password" autocomplete="new-password" data-lpignore="true" data-1p-ignore /></div>
+        <div class="field"><label>Nhập lại mã PIN mới</label><input id="cp-new2" type="password" autocomplete="new-password" data-lpignore="true" data-1p-ignore /></div>
         <button id="cp-save">🔑 Đổi mã PIN</button>
       </div>
     `;
@@ -1586,9 +1586,9 @@
     content.innerHTML = `
       <div class="card" style="max-width:480px">
         <h3>Đổi mã PIN cá nhân</h3>
-        <div class="field"><label>Mã PIN hiện tại</label><input id="ecp-old" type="password" /></div>
-        <div class="field"><label>Mã PIN mới</label><input id="ecp-new" type="password" /></div>
-        <div class="field"><label>Nhập lại mã PIN mới</label><input id="ecp-new2" type="password" /></div>
+        <div class="field"><label>Mã PIN hiện tại</label><input id="ecp-old" type="password" autocomplete="new-password" data-lpignore="true" data-1p-ignore /></div>
+        <div class="field"><label>Mã PIN mới</label><input id="ecp-new" type="password" autocomplete="new-password" data-lpignore="true" data-1p-ignore /></div>
+        <div class="field"><label>Nhập lại mã PIN mới</label><input id="ecp-new2" type="password" autocomplete="new-password" data-lpignore="true" data-1p-ignore /></div>
         <button id="ecp-save">🔑 Đổi mã PIN</button>
         <p class="muted" style="margin-top:10px">Mã PIN mặc định ban đầu (nếu chưa từng đổi): 4 số cuối Số CCHN.</p>
       </div>
@@ -2611,7 +2611,7 @@
     content.innerHTML = `
       <div class="card">
         <h3>Đổi mã PIN quản trị</h3>
-        <div class="field"><label>Mã PIN mới</label><input id="new-admin-pin" type="password" /></div>
+        <div class="field"><label>Mã PIN mới</label><input id="new-admin-pin" type="password" autocomplete="new-password" data-lpignore="true" data-1p-ignore /></div>
         <button id="btn-save-pin">🔑 Lưu mã PIN</button>
       </div>
       <div class="card">
