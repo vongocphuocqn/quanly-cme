@@ -6,26 +6,67 @@
 <title>Quản lý CNKT - BVĐK Trung tâm tỉnh Gia Lai (Bản test trên máy)</title>
 <link rel="icon" href="data:,">
 <script type="module">
-  // ====== CẤU HÌNH FIREBASE — ANH DÁN firebaseConfig CỦA MÌNH VÀO ĐÂY ======
-  // Lấy từ: Firebase Console → Project Overview → biểu tượng </> (Web app) → Register app
+  // ====== KẾT NỐI FIREBASE ======
+  // KHÔNG cần sửa file này. Nếu chưa cấu hình, ứng dụng sẽ tự hiện màn hình
+  // cho anh dán đoạn firebaseConfig (lấy từ Firebase Console) ngay trên trình duyệt.
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
   import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, query, where, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
-  const firebaseConfig = {
-    apiKey: "DAN_API_KEY_CUA_ANH_VAO_DAY",
-    authDomain: "DAN_AUTH_DOMAIN_VAO_DAY",
-    projectId: "DAN_PROJECT_ID_VAO_DAY",
-    storageBucket: "DAN_STORAGE_BUCKET_VAO_DAY",
-    messagingSenderId: "DAN_SENDER_ID_VAO_DAY",
-    appId: "DAN_APP_ID_VAO_DAY"
+  const LS_KEY = 'cnkt_firebase_config_v1';
+  const PLACEHOLDER = {
+    apiKey: "AIzaSyAxHONXeW5fEIWGD5MsVlBgv1WXPorpeJw",
+    authDomain: "capnhatsotinchi-bvdktt-gialai.firebaseapp.com",
+    projectId: "capnhatsotinchi-bvdktt-gialai",
+    storageBucket: "capnhatsotinchi-bvdktt-gialai.firebasestorage.app",
+    messagingSenderId: "984427508625",
+    appId: "1:984427508625:web:d756933d6f6205c716e030"
   };
-  // ====== HẾT PHẦN CẦN ĐIỀN ======
-
-  const __CONFIG_CHUA_DIEN = String(firebaseConfig.apiKey || '').indexOf('DAN_') === 0;
 
   function sanitizeKey(key){ return String(key).replace(/\//g, '__SLASH__'); }
 
-  if (__CONFIG_CHUA_DIEN){
+  function loadSavedConfig(){
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      if (!raw) return null;
+      const obj = JSON.parse(raw);
+      if (obj && obj.apiKey && obj.projectId) return obj;
+    } catch(e){}
+    return null;
+  }
+
+  // Hàm này được màn hình thiết lập (trong file) gọi khi anh bấm "Lưu & Tiếp tục"
+  window.__cnktSaveFirebaseConfig = function(text){
+    if (!text){
+      throw new Error('Ô dán đang TRỐNG. Dòng chữ xám anh thấy trong ô chỉ là ví dụ minh hoạ (placeholder), không phải nội dung thật — hãy bấm vào ô rồi dán (Ctrl+V) đoạn firebaseConfig thật lấy từ Firebase Console của anh vào đó.');
+    }
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start === -1 || end === -1 || end < start){
+      throw new Error('Không tìm thấy dấu { } trong nội dung đã dán. Hãy dán đúng đoạn mã firebaseConfig Firebase đưa ra.');
+    }
+    const objText = text.slice(start, end + 1);
+    let obj;
+    try {
+      // eslint-disable-next-line no-new-func
+      obj = (new Function('return (' + objText + ');'))();
+    } catch (e) {
+      throw new Error('Không đọc được nội dung đã dán. Hãy kiểm tra lại đã copy đủ và đúng cú pháp từ Firebase Console.');
+    }
+    if (!obj || !obj.apiKey || !obj.projectId){
+      throw new Error('Thiếu apiKey hoặc projectId trong nội dung đã dán. Hãy copy đầy đủ đoạn config.');
+    }
+    if (String(obj.apiKey).trim() === '...' || String(obj.projectId).trim() === '...'){
+      throw new Error('Nội dung đã dán vẫn còn là VÍ DỤ MẪU (giá trị "..."), chưa phải thông tin thật của project Firebase anh đã tạo. Hãy lấy đúng đoạn config thật từ Firebase Console (Project Overview → biểu tượng </> → Register app).');
+    }
+    localStorage.setItem(LS_KEY, JSON.stringify(obj));
+  };
+  window.__cnktClearFirebaseConfig = function(){ localStorage.removeItem(LS_KEY); };
+
+  const savedConfig = loadSavedConfig();
+  const firebaseConfig = savedConfig || PLACEHOLDER;
+  const isPlaceholder = String(firebaseConfig.apiKey || '').indexOf('DAN_') === 0;
+
+  if (isPlaceholder){
     window.__cnktConfigMissing = true;
     window.dispatchEvent(new Event('cnkt-storage-ready'));
   } else {
@@ -69,7 +110,7 @@
 </head>
 <body style="margin:0;">
 <div style="background:#e6f4ec;border-bottom:2px solid #1f7a4d;color:#155c3a;font-family:Arial,sans-serif;font-size:13px;padding:8px 16px;text-align:center;">
-  ☁ DỮ LIỆU LƯU TRÊN FIREBASE (dùng chung thật giữa các Khoa/Phòng và Admin trên nhiều máy khác nhau). Nếu thấy màn hình yêu cầu cấu hình, xem hướng dẫn điền firebaseConfig ở đầu file HTML.
+  ☁ DỮ LIỆU LƯU TRÊN FIREBASE (dùng chung thật giữa các Khoa/Phòng và Admin trên nhiều máy khác nhau). Nếu thấy màn hình yêu cầu cấu hình, chỉ cần dán đoạn firebaseConfig vào ô có sẵn — không cần sửa file.
 </div>
 <div id="cnkt-root"></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -2477,6 +2518,11 @@
         <h3>Quy định áp dụng</h3>
         <p class="muted">Hệ thống áp dụng quy định tại Thông tư 32/2023/TT-BYT: yêu cầu tối thiểu ${REQUIRED_HOURS} giờ tín chỉ trong chu kỳ ${CYCLE_YEARS} năm liên tục cho người hành nghề khám bệnh, chữa bệnh. Ngưỡng "Nguy cơ" được tính khi còn ≤ 6 tháng đến hạn chu kỳ mà chưa đạt đủ giờ; ngưỡng "Cần chú ý" khi tiến độ thực hiện chậm hơn 15% so với tiến độ tuyến tính kỳ vọng.</p>
       </div>
+      <div class="card">
+        <h3>Kết nối dữ liệu (Firebase)</h3>
+        <p class="muted">Dữ liệu hệ thống đang lưu dùng chung trên Firebase. Nếu cần đổi sang một project Firebase khác (ví dụ chuyển từ project thử nghiệm sang project chính thức), bấm nút dưới đây — máy này sẽ quên cấu hình hiện tại và yêu cầu dán lại cấu hình mới ở lần mở tiếp theo. <b>Việc này chỉ ảnh hưởng tới máy/trình duyệt này</b>, không xoá dữ liệu trên Firebase.</p>
+        <button class="ghost" id="btn-change-firebase">🔧 Đổi cấu hình Firebase trên máy này</button>
+      </div>
     `;
     document.getElementById('btn-reset-reseed').onclick = async ()=>{
       if (!confirm('XOÁ SẠCH toàn bộ dữ liệu hiện tại (nhân viên, đơn vị, hoạt động CNKT, lịch sử duyệt) và nạp lại 1.417 nhân viên chính thức? Hành động này không thể hoàn tác.')) return;
@@ -2503,6 +2549,11 @@
       status.textContent = 'Hoàn tất! Đã nạp lại dữ liệu chính thức.';
       showToast('Đã nạp lại dữ liệu chính thức.');
       renderAdminApp();
+    };
+    document.getElementById('btn-change-firebase').onclick = ()=>{
+      if (!confirm('Quên cấu hình Firebase đã lưu trên máy này và quay lại màn hình thiết lập?')) return;
+      if (window.__cnktClearFirebaseConfig) window.__cnktClearFirebaseConfig();
+      location.reload();
     };
     document.getElementById('btn-save-pin').onclick = async ()=>{
       const pin = document.getElementById('new-admin-pin').value.trim();
@@ -2596,12 +2647,36 @@
     }
     if (window.__cnktConfigMissing){
       root.innerHTML = `
-        <div style="max-width:640px;margin:60px auto;padding:28px 32px;border:1px solid #ddd7c8;border-radius:10px;background:#fff;font-family:Arial,sans-serif;line-height:1.6">
+        <div style="max-width:680px;margin:50px auto;padding:28px 32px;border:1px solid #ddd7c8;border-radius:10px;background:#fff;font-family:Arial,sans-serif;line-height:1.6">
           <h2 style="color:#a3271f;margin-top:0">⚠ Chưa cấu hình Firebase</h2>
-          <p>Ứng dụng cần kết nối tới Firebase để lưu dữ liệu dùng chung cho nhiều Khoa/Phòng. Vui lòng mở file HTML này bằng trình soạn thảo văn bản, tìm dòng <code>const firebaseConfig = {...}</code> ở gần đầu file, và điền đầy đủ thông tin lấy từ Firebase Console (Project Overview → biểu tượng &lt;/&gt; → Register app).</p>
-          <p style="margin-bottom:0">Sau khi điền xong, lưu file và mở lại trang này.</p>
+          <p>Dán toàn bộ đoạn <code>firebaseConfig</code> mà Firebase Console đưa cho anh (dán nguyên cả dòng <code>const firebaseConfig = {...};</code> cũng được) vào ô dưới đây, rồi bấm <b>"Lưu &amp; Tiếp tục"</b> — không cần sửa file, không cần mở trình soạn thảo.</p>
+          <textarea id="fb-config-input" rows="9" style="width:100%;font-family:monospace;font-size:13px;padding:10px;border:1px solid #c6bfac;border-radius:6px;box-sizing:border-box" placeholder='const firebaseConfig = {
+  apiKey: "...",
+  authDomain: "...",
+  projectId: "...",
+  storageBucket: "...",
+  messagingSenderId: "...",
+  appId: "..."
+};'></textarea>
+          <div id="fb-config-error" style="color:#a3271f;margin-top:10px;font-weight:700;display:none"></div>
+          <div style="margin-top:16px">
+            <button id="fb-config-save" style="padding:10px 20px;border-radius:6px;border:1px solid #14335c;background:linear-gradient(180deg,#2b5e8f,#14335c);color:#fff;font-weight:700;cursor:pointer;font-family:Arial,sans-serif">💾 Lưu &amp; Tiếp tục</button>
+          </div>
+          <p style="margin-top:20px;font-size:13px;color:#6b6457">Chưa có đoạn này? Vào <a href="https://console.firebase.google.com" target="_blank" rel="noopener">Firebase Console</a> → tạo project miễn phí → bật Firestore Database → Project Overview → bấm biểu tượng <code>&lt;/&gt;</code> (Web) → Register app → copy đoạn config được đưa ra.</p>
         </div>
       `;
+      document.getElementById('fb-config-save').onclick = ()=>{
+        const text = document.getElementById('fb-config-input').value.trim();
+        const errBox = document.getElementById('fb-config-error');
+        errBox.style.display = 'none';
+        try {
+          window.__cnktSaveFirebaseConfig(text);
+          location.reload();
+        } catch(e){
+          errBox.style.display = 'block';
+          errBox.textContent = '❌ ' + (e.message || 'Có lỗi xảy ra, vui lòng kiểm tra lại nội dung đã dán.');
+        }
+      };
       return;
     }
     await loadAll();
