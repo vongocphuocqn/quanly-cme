@@ -989,14 +989,15 @@
     const tongGio = mine.reduce((s,p)=> s+(parseFloat(p.soGioTinChi)||0), 0);
     wrap.innerHTML = `
       <table>
-        <thead><tr><th>Nhân viên</th><th>Hoạt động</th><th>Hình thức</th><th>Ngày</th><th>Giờ tín chỉ</th><th>Ngày xác nhận</th></tr></thead>
+        <thead><tr><th>Nhân viên</th><th>Hoạt động</th><th>Hình thức</th><th>Ngày</th><th>Giờ tín chỉ</th><th>Bằng chứng</th><th>Ngày xác nhận</th></tr></thead>
         <tbody>${mine.map(p=>`
           <tr>
             <td>${p.empName}</td><td>${p.tenHoatDong}</td><td>${p.loaiHinh}</td><td>${fmtDate(p.ngayThamGia)}</td><td>${p.soGioTinChi}</td>
+            <td>${p.bangChungFile? '📎 Có file' : (p.bangChung? '🔗 ' + p.bangChung : '—')}</td>
             <td>${fmtDate(p.confirmedAt)}</td>
           </tr>
         `).join('')}
-        <tr><td colspan="4" style="text-align:right;font-weight:bold">Tổng cộng</td><td style="font-weight:bold">${tongGio.toFixed(1)} giờ</td><td></td></tr>
+        <tr><td colspan="4" style="text-align:right;font-weight:bold">Tổng cộng</td><td style="font-weight:bold">${tongGio.toFixed(1)} giờ</td><td></td><td></td></tr>
         </tbody>
       </table>
     `;
@@ -1009,10 +1010,11 @@
     if (!mine.length){ wrap.innerHTML = `<div class="empty">Không có hoạt động phù hợp.</div>`; return; }
     wrap.innerHTML = `
       <table>
-        <thead><tr><th>Nhân viên</th><th>Hoạt động</th><th>Hình thức</th><th>Ngày</th><th>Giờ tín chỉ</th><th>Ngày từ chối</th><th>Lý do</th></tr></thead>
+        <thead><tr><th>Nhân viên</th><th>Hoạt động</th><th>Hình thức</th><th>Ngày</th><th>Giờ tín chỉ</th><th>Bằng chứng</th><th>Ngày từ chối</th><th>Lý do</th></tr></thead>
         <tbody>${mine.map(p=>`
           <tr>
             <td>${p.empName}</td><td>${p.tenHoatDong}</td><td>${p.loaiHinh}</td><td>${fmtDate(p.ngayThamGia)}</td><td>${p.soGioTinChi}</td>
+            <td>${p.bangChungFile? '📎 Có file' : (p.bangChung? '🔗 ' + p.bangChung : '—')}</td>
             <td>${fmtDate(p.rejectedAt)}</td><td style="font-size:12px">${p.lyDo||'—'}</td>
           </tr>
         `).join('')}</tbody>
@@ -1202,10 +1204,11 @@
     if (!mine.length){ wrap.innerHTML = `<div class="empty">Không có hoạt động phù hợp.</div>`; return; }
     wrap.innerHTML = `
       <table>
-        <thead><tr><th>Nhân viên</th><th>Hoạt động</th><th>Hình thức</th><th>Ngày</th><th>Giờ tín chỉ</th><th>Trạng thái</th></tr></thead>
+        <thead><tr><th>Nhân viên</th><th>Hoạt động</th><th>Hình thức</th><th>Ngày</th><th>Giờ tín chỉ</th><th>Bằng chứng</th><th>Trạng thái</th></tr></thead>
         <tbody>${mine.map(p=>`
           <tr>
             <td>${p.empName}</td><td>${p.tenHoatDong}</td><td>${p.loaiHinh}</td><td>${fmtDate(p.ngayThamGia)}</td><td>${p.soGioTinChi}</td>
+            <td>${p.bangChungFile? '📎 Có file' : (p.bangChung? '🔗 ' + p.bangChung : '—')}</td>
             <td><span class="pill amber">Chờ duyệt</span></td>
           </tr>
         `).join('')}</tbody>
@@ -1313,10 +1316,11 @@
       </div>
       <div class="card">
         <h3>Tổng hợp tất cả các đợt đã lập phiếu (${tongHop.length})</h3>
-        ${tongHop.length ? `<table><thead><tr><th>Hình thức</th><th>Tên hoạt động</th><th>Ngày tham gia</th><th>Giờ tín chỉ</th><th>Trạng thái</th><th>Lý do (nếu bị từ chối)</th></tr></thead>
+        ${tongHop.length ? `<table><thead><tr><th>Hình thức</th><th>Tên hoạt động</th><th>Ngày tham gia</th><th>Giờ tín chỉ</th><th>Bằng chứng</th><th>Trạng thái</th><th>Lý do (nếu bị từ chối)</th></tr></thead>
         <tbody>${tongHop.map(t=>{
           const pillColor = t._trangThai==='Đã duyệt' ? 'green' : t._trangThai==='Chờ duyệt' ? 'amber' : 'red';
-          return `<tr><td>${t.loaiHinh}</td><td>${t.tenHoatDong}</td><td>${fmtDate(t.ngayThamGia)}</td><td>${t.soGioTinChi}</td><td><span class="pill ${pillColor}">${t._trangThai}</span></td><td style="font-size:12px">${t.lyDo||'—'}</td></tr>`;
+          const evidence = t.bangChungFile ? '📎 Có file' : (t.bangChung ? '🔗 ' + t.bangChung : '—');
+          return `<tr><td>${t.loaiHinh}</td><td>${t.tenHoatDong}</td><td>${fmtDate(t.ngayThamGia)}</td><td>${t.soGioTinChi}</td><td>${evidence}</td><td><span class="pill ${pillColor}">${t._trangThai}</span></td><td style="font-size:12px">${t.lyDo||'—'}</td></tr>`;
         }).join('')}</tbody></table>`
         : `<div class="empty">Chưa có đợt nào được lập phiếu.</div>`}
       </div>
@@ -1359,17 +1363,17 @@
       const tongLoc = list.reduce((s,a)=> s+(parseFloat(a.soGioTinChi)||0), 0);
       const wrap = document.getElementById('confirmed-wrap');
       const filterDesc = filterDescText(fromQ, toQ);
-      wrap.innerHTML = list.length ? `<table><thead><tr><th>Hình thức</th><th>Tên hoạt động</th><th>Ngày</th><th>Giờ tín chỉ</th></tr></thead>
-        <tbody>${list.map(a=>`<tr><td>${a.loaiHinh}</td><td>${a.tenHoatDong}</td><td>${fmtDate(a.ngayThamGia)}</td><td>${a.soGioTinChi}</td></tr>`).join('')}
-        <tr><td colspan="3" style="text-align:right;font-weight:bold">Tổng cộng</td><td style="font-weight:bold">${tongLoc.toFixed(1)} giờ</td></tr></tbody></table>`
+      wrap.innerHTML = list.length ? `<table><thead><tr><th>Hình thức</th><th>Tên hoạt động</th><th>Ngày</th><th>Giờ tín chỉ</th><th>Bằng chứng</th></tr></thead>
+        <tbody>${list.map(a=>`<tr><td>${a.loaiHinh}</td><td>${a.tenHoatDong}</td><td>${fmtDate(a.ngayThamGia)}</td><td>${a.soGioTinChi}</td><td>${a.bangChungFile? '📎 Có file' : (a.bangChung? '🔗 ' + a.bangChung : '—')}</td></tr>`).join('')}
+        <tr><td colspan="4" style="text-align:right;font-weight:bold">Tổng cộng</td><td style="font-weight:bold">${tongLoc.toFixed(1)} giờ</td></tr></tbody></table>`
         : `<div class="empty">Không có hoạt động đã xác nhận phù hợp${filterDesc ? ' với bộ lọc trên' : ''}.</div>`;
     }
     function renderPendingTable(fromQ, toQ){
       const list = myPending.filter(p=> dateInRange(p.ngayThamGia, fromQ, toQ));
       const wrap = document.getElementById('pending-wrap');
       const filterDesc = filterDescText(fromQ, toQ);
-      wrap.innerHTML = list.length ? `<table><thead><tr><th>Hình thức</th><th>Tên hoạt động</th><th>Ngày</th><th>Giờ</th><th>Trạng thái</th><th></th></tr></thead>
-        <tbody>${list.map(p=>`<tr><td>${p.loaiHinh}</td><td>${p.tenHoatDong}</td><td>${fmtDate(p.ngayThamGia)}</td><td>${p.soGioTinChi}</td><td><span class="pill amber">Chờ duyệt</span></td>
+      wrap.innerHTML = list.length ? `<table><thead><tr><th>Hình thức</th><th>Tên hoạt động</th><th>Ngày</th><th>Giờ</th><th>Bằng chứng</th><th>Trạng thái</th><th></th></tr></thead>
+        <tbody>${list.map(p=>`<tr><td>${p.loaiHinh}</td><td>${p.tenHoatDong}</td><td>${fmtDate(p.ngayThamGia)}</td><td>${p.soGioTinChi}</td><td>${p.bangChungFile? '📎 Có file' : (p.bangChung? '🔗 ' + p.bangChung : '—')}</td><td><span class="pill amber">Chờ duyệt</span></td>
           <td><button class="ghost small-btn" data-edit-pending="${p.id}">✏️ Sửa</button> <button class="ghost small-btn" data-del-pending="${p.id}">🗑️ Xoá</button></td></tr>`).join('')}</tbody></table>`
         : `<div class="empty">Không có hoạt động đang chờ duyệt${filterDesc ? ' phù hợp với bộ lọc trên' : ''}.</div>`;
       wrap.querySelectorAll('[data-edit-pending]').forEach(b=>{
@@ -1389,8 +1393,8 @@
       const list = myRejected.filter(p=> dateInRange(p.ngayThamGia, fromQ, toQ));
       const wrap = document.getElementById('rejected-wrap');
       const filterDesc = filterDescText(fromQ, toQ);
-      wrap.innerHTML = list.length ? `<table><thead><tr><th>Hình thức</th><th>Tên hoạt động</th><th>Ngày</th><th>Giờ</th><th>Ngày từ chối</th><th>Lý do</th></tr></thead>
-        <tbody>${list.map(p=>`<tr><td>${p.loaiHinh}</td><td>${p.tenHoatDong}</td><td>${fmtDate(p.ngayThamGia)}</td><td>${p.soGioTinChi}</td><td>${fmtDate(p.rejectedAt)}</td><td style="font-size:12px">${p.lyDo||'—'}</td></tr>`).join('')}</tbody></table>`
+      wrap.innerHTML = list.length ? `<table><thead><tr><th>Hình thức</th><th>Tên hoạt động</th><th>Ngày</th><th>Giờ</th><th>Bằng chứng</th><th>Ngày từ chối</th><th>Lý do</th></tr></thead>
+        <tbody>${list.map(p=>`<tr><td>${p.loaiHinh}</td><td>${p.tenHoatDong}</td><td>${fmtDate(p.ngayThamGia)}</td><td>${p.soGioTinChi}</td><td>${p.bangChungFile? '📎 Có file' : (p.bangChung? '🔗 ' + p.bangChung : '—')}</td><td>${fmtDate(p.rejectedAt)}</td><td style="font-size:12px">${p.lyDo||'—'}</td></tr>`).join('')}</tbody></table>`
         : `<div class="empty">Không có hoạt động bị từ chối/huỷ${filterDesc ? ' phù hợp với bộ lọc trên' : ''}.</div>`;
     }
     function applyDateFilter(){
@@ -1679,6 +1683,7 @@
           <td><span class="pill green">${v.du}</span></td>
           <td><span class="pill amber">${v.chu}</span></td>
           <td><span class="pill red">${v.nguy}</span></td>
+          <td><span class="pill" style="background:#eee;color:#555">${v.bt}</span></td>
           <td>${(v.sumPct/v.total).toFixed(0)}%</td>
         </tr>
       `).join('');
@@ -1688,6 +1693,7 @@
           <td><span class="pill green">${v.du}</span></td>
           <td><span class="pill amber">${v.chu}</span></td>
           <td><span class="pill red">${v.nguy}</span></td>
+          <td><span class="pill" style="background:#eee;color:#555">${v.bt}</span></td>
           <td>${(v.sumPct/v.total).toFixed(0)}%</td>
         </tr>
       `).join('');
@@ -1720,13 +1726,13 @@
         </div>` : ''}
         <div class="card">
           <h3>Thống kê theo Khoa / Phòng</h3>
-          ${total? `<table><thead><tr><th>STT</th><th>Khoa / Phòng</th><th>Số NV</th><th>Đã đủ</th><th>Cần chú ý</th><th>Nguy cơ</th><th>% TB toàn khoa</th></tr></thead><tbody>${rows}</tbody></table>`
+          ${total? `<table><thead><tr><th>STT</th><th>Khoa / Phòng</th><th>Số NV</th><th>Đã đủ</th><th>Cần chú ý</th><th>Nguy cơ</th><th>Đang thực hiện</th><th>% TB toàn khoa</th></tr></thead><tbody>${rows}</tbody></table>`
           : `<div class="empty">Chưa có dữ liệu nhân viên nào trong hệ thống.</div>`}
           ${total? `<div style="position:relative;height:${Math.max(260, unitEntries.length*34)}px;margin-top:18px"><canvas id="chart-unit"></canvas></div>` : ''}
         </div>
         <div class="card">
           <h3>Thống kê theo Đối tượng (chức danh hành nghề)</h3>
-          ${total? `<table><thead><tr><th>STT</th><th>Chức danh</th><th>Số NV</th><th>Đã đủ</th><th>Cần chú ý</th><th>Nguy cơ</th><th>% TB</th></tr></thead><tbody>${rowsRole}</tbody></table>`
+          ${total? `<table><thead><tr><th>STT</th><th>Chức danh</th><th>Số NV</th><th>Đã đủ</th><th>Cần chú ý</th><th>Nguy cơ</th><th>Đang thực hiện</th><th>% TB</th></tr></thead><tbody>${rowsRole}</tbody></table>`
           : `<div class="empty">Chưa có dữ liệu nhân viên nào trong hệ thống.</div>`}
           ${total? `<div style="position:relative;height:${Math.max(260, roleEntries.length*40)}px;margin-top:18px"><canvas id="chart-role"></canvas></div>` : ''}
         </div>
@@ -1739,9 +1745,9 @@
       `;
       document.getElementById('btn-export').onclick = ()=> exportCSV(refDate);
       document.getElementById('btn-export-word').onclick = ()=>{
-        const headers = ['STT','Khoa/Phòng','Số NV','Đã đủ','Cần chú ý','Nguy cơ','% TB toàn khoa'];
+        const headers = ['STT','Khoa/Phòng','Số NV','Đã đủ','Cần chú ý','Nguy cơ','Đang thực hiện','% TB toàn khoa'];
         const wordRows = unitEntries.map(([name,v],i)=>[
-          i+1, name, v.total, v.du, v.chu, v.nguy, (v.sumPct/v.total).toFixed(0)+'%'
+          i+1, name, v.total, v.du, v.chu, v.nguy, v.bt, (v.sumPct/v.total).toFixed(0)+'%'
         ]);
         const summaryTable = {
           title: 'Tổng hợp toàn viện',
@@ -1751,12 +1757,12 @@
         exportWordTable('Báo cáo thống kê cập nhật kiến thức y khoa liên tục', headers, wordRows, 'bao_cao_cnkt_theo_khoa_' + refDate + '.doc', { trichYeu: '(Thống kê theo Khoa/Phòng — toàn viện — chốt số liệu tại ngày ' + fmtDate(refDate) + ')', summaryTable: summaryTable });
       };
       document.getElementById('btn-export-role-excel').onclick = ()=>{
-        const roleRows = roleEntries.map(([name,v],i)=> [i+1, name, v.total, v.du, v.chu, v.nguy, (v.sumPct/v.total).toFixed(0)+'%']);
-        exportXlsxGeneric(['STT','Chức danh','Số NV','Đã đủ','Cần chú ý','Nguy cơ','% TB'], roleRows, 'bao_cao_cnkt_theo_doi_tuong_' + refDate + '.xlsx', 'TheoDoiTuong');
+        const roleRows = roleEntries.map(([name,v],i)=> [i+1, name, v.total, v.du, v.chu, v.nguy, v.bt, (v.sumPct/v.total).toFixed(0)+'%']);
+        exportXlsxGeneric(['STT','Chức danh','Số NV','Đã đủ','Cần chú ý','Nguy cơ','Đang thực hiện','% TB'], roleRows, 'bao_cao_cnkt_theo_doi_tuong_' + refDate + '.xlsx', 'TheoDoiTuong');
       };
       document.getElementById('btn-export-role-word').onclick = ()=>{
-        const headers = ['STT','Chức danh','Số NV','Đã đủ','Cần chú ý','Nguy cơ','% TB'];
-        const wordRows = roleEntries.map(([name,v],i)=> [i+1, name, v.total, v.du, v.chu, v.nguy, (v.sumPct/v.total).toFixed(0)+'%']);
+        const headers = ['STT','Chức danh','Số NV','Đã đủ','Cần chú ý','Nguy cơ','Đang thực hiện','% TB'];
+        const wordRows = roleEntries.map(([name,v],i)=> [i+1, name, v.total, v.du, v.chu, v.nguy, v.bt, (v.sumPct/v.total).toFixed(0)+'%']);
         const summaryTable = {
           title: 'Tổng hợp toàn viện',
           headers: ['Tổng số NV', 'Đã đủ giờ', 'Cần chú ý', 'Nguy cơ chưa đủ', 'Tỷ lệ hoàn thành chung'],
@@ -2115,11 +2121,13 @@
               <button class="secondary" id="btn-export-rejected-excel">📊 Xuất Excel</button>
             </div>
             <table>
-              <thead><tr><th>Khoa/Phòng</th><th>Nhân viên</th><th>Hình thức</th><th>Hoạt động</th><th>Ngày</th><th>Giờ</th><th>Ngày từ chối</th><th>Lý do</th></tr></thead>
+              <thead><tr><th>Khoa/Phòng</th><th>Nhân viên</th><th>Hình thức</th><th>Hoạt động</th><th>Ngày</th><th>Giờ</th><th>Bằng chứng</th><th>Ngày từ chối</th><th>Lý do</th></tr></thead>
               <tbody>${list.map(p=>`
                 <tr>
                   <td>${p.donViName}</td><td>${p.empName}</td><td>${p.loaiHinh}</td><td>${p.tenHoatDong}</td>
-                  <td>${fmtDate(p.ngayThamGia)}</td><td>${p.soGioTinChi}</td><td>${fmtDate(p.rejectedAt)}</td><td>${p.lyDo||'—'}</td>
+                  <td>${fmtDate(p.ngayThamGia)}</td><td>${p.soGioTinChi}</td>
+                  <td style="max-width:180px;font-size:12px">${p.bangChung||'—'}${evidenceFileHtml(p)}</td>
+                  <td>${fmtDate(p.rejectedAt)}</td><td>${p.lyDo||'—'}</td>
                 </tr>
               `).join('')}</tbody>
             </table>
@@ -2127,13 +2135,13 @@
         `;
         if (list.length){
           document.getElementById('btn-export-rejected-word').onclick = ()=>{
-            const headers = ['Khoa/Phòng','Nhân viên','Hình thức','Hoạt động','Ngày','Giờ','Ngày từ chối','Lý do'];
-            const rows = list.map(p=>[p.donViName, p.empName, p.loaiHinh, p.tenHoatDong, fmtDate(p.ngayThamGia), p.soGioTinChi, fmtDate(p.rejectedAt), p.lyDo||'—']);
+            const headers = ['Khoa/Phòng','Nhân viên','Hình thức','Hoạt động','Ngày','Giờ','Bằng chứng','Ngày từ chối','Lý do'];
+            const rows = list.map(p=>[p.donViName, p.empName, p.loaiHinh, p.tenHoatDong, fmtDate(p.ngayThamGia), p.soGioTinChi, p.bangChung||'—', fmtDate(p.rejectedAt), p.lyDo||'—']);
             exportWordTable('Danh sách hoạt động đã từ chối / huỷ', headers, rows, 'cnkt_tu_choi_'+todayISO()+'.doc', { trichYeu: scopeLabel() });
           };
           document.getElementById('btn-export-rejected-excel').onclick = ()=>{
-            exportCsvGeneric(['Khoa/Phòng','Nhân viên','Hình thức','Hoạt động','Ngày','Giờ','Ngày từ chối','Lý do'],
-              list.map(p=>[p.donViName, p.empName, p.loaiHinh, p.tenHoatDong, fmtDate(p.ngayThamGia), p.soGioTinChi, fmtDate(p.rejectedAt), p.lyDo||'']),
+            exportCsvGeneric(['Khoa/Phòng','Nhân viên','Hình thức','Hoạt động','Ngày','Giờ','Bằng chứng','Ngày từ chối','Lý do'],
+              list.map(p=>[p.donViName, p.empName, p.loaiHinh, p.tenHoatDong, fmtDate(p.ngayThamGia), p.soGioTinChi, p.bangChung||'', fmtDate(p.rejectedAt), p.lyDo||'']),
               'cnkt_tu_choi_'+todayISO()+'.csv');
           };
         }
