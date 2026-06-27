@@ -378,6 +378,7 @@
   }
 
   function fmtDate(d){ if(!d) return "—"; const dt = new Date(d); if(isNaN(dt)) return d; return dt.toLocaleDateString("vi-VN"); }
+  function fmtDateRange(from, to){ if(!from && !to) return "—"; if(to && to!==from) return fmtDate(from) + " – " + fmtDate(to); return fmtDate(from||to); }
   function todayISO(){ return new Date().toISOString().slice(0,10); }
   function addYears(iso, years){ const d = new Date(iso); d.setFullYear(d.getFullYear()+years); return d.toISOString().slice(0,10); }
   function monthsBetween(a,b){ const d1=new Date(a), d2=new Date(b); return (d2.getFullYear()-d1.getFullYear())*12 + (d2.getMonth()-d1.getMonth()); }
@@ -989,15 +990,16 @@
     const tongGio = mine.reduce((s,p)=> s+(parseFloat(p.soGioTinChi)||0), 0);
     wrap.innerHTML = `
       <table>
-        <thead><tr><th>Nhân viên</th><th>Hoạt động</th><th>Hình thức</th><th>Ngày</th><th>Giờ tín chỉ</th><th>Bằng chứng</th><th>Ngày xác nhận</th></tr></thead>
+        <thead><tr><th>Nhân viên</th><th>Hoạt động</th><th>Hình thức</th><th>Từ ngày - Đến ngày</th><th>Giờ tín chỉ</th><th>Số chứng nhận CME</th><th>Bằng chứng</th><th>Ngày xác nhận</th></tr></thead>
         <tbody>${mine.map(p=>`
           <tr>
-            <td>${p.empName}</td><td>${p.tenHoatDong}</td><td>${p.loaiHinh}</td><td>${fmtDate(p.ngayThamGia)}</td><td>${p.soGioTinChi}</td>
+            <td>${p.empName}</td><td>${p.tenHoatDong}</td><td>${p.loaiHinh}</td><td>${fmtDateRange(p.ngayThamGia, p.ngayKetThuc)}</td><td>${p.soGioTinChi}</td>
+            <td>${p.soChungNhanCME||'—'}</td>
             <td>${p.bangChungFile? '📎 Có file' : (p.bangChung? '🔗 ' + p.bangChung : '—')}</td>
             <td>${fmtDate(p.confirmedAt)}</td>
           </tr>
         `).join('')}
-        <tr><td colspan="4" style="text-align:right;font-weight:bold">Tổng cộng</td><td style="font-weight:bold">${tongGio.toFixed(1)} giờ</td><td></td><td></td></tr>
+        <tr><td colspan="4" style="text-align:right;font-weight:bold">Tổng cộng</td><td style="font-weight:bold">${tongGio.toFixed(1)} giờ</td><td></td><td></td><td></td></tr>
         </tbody>
       </table>
     `;
@@ -1010,10 +1012,11 @@
     if (!mine.length){ wrap.innerHTML = `<div class="empty">Không có hoạt động phù hợp.</div>`; return; }
     wrap.innerHTML = `
       <table>
-        <thead><tr><th>Nhân viên</th><th>Hoạt động</th><th>Hình thức</th><th>Ngày</th><th>Giờ tín chỉ</th><th>Bằng chứng</th><th>Ngày từ chối</th><th>Lý do</th></tr></thead>
+        <thead><tr><th>Nhân viên</th><th>Hoạt động</th><th>Hình thức</th><th>Từ ngày - Đến ngày</th><th>Giờ tín chỉ</th><th>Số chứng nhận CME</th><th>Bằng chứng</th><th>Ngày từ chối</th><th>Lý do</th></tr></thead>
         <tbody>${mine.map(p=>`
           <tr>
-            <td>${p.empName}</td><td>${p.tenHoatDong}</td><td>${p.loaiHinh}</td><td>${fmtDate(p.ngayThamGia)}</td><td>${p.soGioTinChi}</td>
+            <td>${p.empName}</td><td>${p.tenHoatDong}</td><td>${p.loaiHinh}</td><td>${fmtDateRange(p.ngayThamGia, p.ngayKetThuc)}</td><td>${p.soGioTinChi}</td>
+            <td>${p.soChungNhanCME||'—'}</td>
             <td>${p.bangChungFile? '📎 Có file' : (p.bangChung? '🔗 ' + p.bangChung : '—')}</td>
             <td>${fmtDate(p.rejectedAt)}</td><td style="font-size:12px">${p.lyDo||'—'}</td>
           </tr>
@@ -1030,12 +1033,14 @@
         <div class="field"><label>Hình thức cập nhật</label>
           <select id="f-loaihinh">${LOAI_HINH.map(l=>`<option>${l}</option>`).join('')}</select>
         </div>
-        <div class="field"><label>Ngày tham gia</label><input id="f-ngay" type="date" value="${todayISO()}" /></div>
+        <div class="field"><label>Từ ngày tham gia</label><input id="f-ngay" type="date" value="${todayISO()}" /></div>
+        <div class="field"><label>Đến ngày tham gia</label><input id="f-ngayden" type="date" value="${todayISO()}" /></div>
       </div>
       <div class="field"><label>Tên hoạt động / khóa học / hội nghị</label><input id="f-ten" placeholder="VD: Hội nghị Gây mê Hồi sức toàn quốc 2026" /></div>
       <div class="row-flex">
         <div class="field"><label>Đơn vị tổ chức</label><input id="f-donvi" placeholder="VD: Hội Gây mê Hồi sức Việt Nam" /></div>
         <div class="field"><label>Số giờ tín chỉ quy đổi</label><input id="f-gio" type="number" step="0.5" min="0" placeholder="VD: 8" /></div>
+        <div class="field"><label>Số chứng nhận CME</label><input id="f-sochungnhan" placeholder="VD: 123/CN-BVĐKTT" /></div>
       </div>
       <div class="field">
         <label>Bằng chứng <span class="muted">(bắt buộc — chọn 1 hoặc nhiều cách dưới đây)</span></label>
@@ -1114,6 +1119,7 @@
       document.getElementById('f-ten').value = '';
       document.getElementById('f-donvi').value = '';
       document.getElementById('f-gio').value = '';
+      document.getElementById('f-sochungnhan').value = '';
       document.getElementById('f-bangchung').value = '';
       document.getElementById('f-file-camera').value = '';
       document.getElementById('f-file-picker').value = '';
@@ -1125,8 +1131,11 @@
       const ten = document.getElementById('f-ten').value.trim();
       const gio = parseFloat(document.getElementById('f-gio').value);
       const bangChungText = document.getElementById('f-bangchung').value.trim();
+      const ngayTu = document.getElementById('f-ngay').value;
+      const ngayDen = document.getElementById('f-ngayden').value;
       if (!ten){ showFormError('Vui lòng nhập Tên hoạt động / khóa học / hội nghị.', ['f-ten']); return null; }
       if (!gio || gio<=0){ showFormError('Vui lòng nhập Số giờ tín chỉ quy đổi hợp lệ (lớn hơn 0).', ['f-gio']); return null; }
+      if (ngayTu && ngayDen && ngayDen < ngayTu){ showFormError('"Đến ngày tham gia" phải sau hoặc bằng "Từ ngày tham gia".', ['f-ngayden']); return null; }
       if (!bangChungText && !pendingFile){ showFormError('Vui lòng nhập số chứng nhận/đường link, hoặc đính kèm ảnh/file chứng nhận trước khi gửi.'); return null; }
       if (pendingFile && pendingFile.isBlurry && !pendingFile.blurConfirmed){ showFormError('Ảnh đính kèm có thể bị mờ. Vui lòng chụp lại ảnh rõ hơn, hoặc tích xác nhận "ảnh vẫn đọc rõ được" ở trên trước khi gửi.'); return null; }
       document.getElementById('f-error').style.display = 'none';
@@ -1135,7 +1144,9 @@
         loaiHinh: document.getElementById('f-loaihinh').value,
         tenHoatDong: ten,
         donViToChuc: document.getElementById('f-donvi').value.trim(),
-        ngayThamGia: document.getElementById('f-ngay').value,
+        ngayThamGia: ngayTu,
+        ngayKetThuc: ngayDen || ngayTu,
+        soChungNhanCME: document.getElementById('f-sochungnhan').value.trim(),
         soGioTinChi: gio,
         bangChung: bangChungText,
         bangChungFile: pendingFile ? pendingFile.dataUrl : '',
@@ -1163,10 +1174,11 @@
       dwrap.innerHTML = `
         <h3 style="font-size:15px">Danh sách đợt đã thêm (${draftList.length})</h3>
         <table>
-          <thead><tr><th>Hình thức</th><th>Tên hoạt động</th><th>Ngày</th><th>Giờ</th><th>Bằng chứng</th><th></th></tr></thead>
+          <thead><tr><th>Hình thức</th><th>Tên hoạt động</th><th>Từ ngày - Đến ngày</th><th>Giờ</th><th>Số chứng nhận CME</th><th>Bằng chứng</th><th></th></tr></thead>
           <tbody>${draftList.map(d=>`
             <tr>
-              <td>${d.loaiHinh}</td><td>${d.tenHoatDong}</td><td>${fmtDate(d.ngayThamGia)}</td><td>${d.soGioTinChi}</td>
+              <td>${d.loaiHinh}</td><td>${d.tenHoatDong}</td><td>${fmtDateRange(d.ngayThamGia, d.ngayKetThuc)}</td><td>${d.soGioTinChi}</td>
+              <td>${d.soChungNhanCME||'—'}</td>
               <td>${d.bangChung || (d.bangChungFile? '📎 Có file':'—')}</td>
               <td><button class="ghost small-btn" data-remove-draft="${d._draftId}">🗑️ Xoá</button></td>
             </tr>
@@ -1204,10 +1216,11 @@
     if (!mine.length){ wrap.innerHTML = `<div class="empty">Không có hoạt động phù hợp.</div>`; return; }
     wrap.innerHTML = `
       <table>
-        <thead><tr><th>Nhân viên</th><th>Hoạt động</th><th>Hình thức</th><th>Ngày</th><th>Giờ tín chỉ</th><th>Bằng chứng</th><th>Trạng thái</th></tr></thead>
+        <thead><tr><th>Nhân viên</th><th>Hoạt động</th><th>Hình thức</th><th>Từ ngày - Đến ngày</th><th>Giờ tín chỉ</th><th>Số chứng nhận CME</th><th>Bằng chứng</th><th>Trạng thái</th></tr></thead>
         <tbody>${mine.map(p=>`
           <tr>
-            <td>${p.empName}</td><td>${p.tenHoatDong}</td><td>${p.loaiHinh}</td><td>${fmtDate(p.ngayThamGia)}</td><td>${p.soGioTinChi}</td>
+            <td>${p.empName}</td><td>${p.tenHoatDong}</td><td>${p.loaiHinh}</td><td>${fmtDateRange(p.ngayThamGia, p.ngayKetThuc)}</td><td>${p.soGioTinChi}</td>
+            <td>${p.soChungNhanCME||'—'}</td>
             <td>${p.bangChungFile? '📎 Có file' : (p.bangChung? '🔗 ' + p.bangChung : '—')}</td>
             <td><span class="pill amber">Chờ duyệt</span></td>
           </tr>
@@ -1221,8 +1234,8 @@
     const acts = await getActivities(empId);
     const overlay = el(`<div class="modal-overlay"><div class="modal" style="max-width:720px">
       <h3>Hoạt động CNKT đã xác nhận — ${emp.hoTen}</h3>
-      ${acts.length? `<table><thead><tr><th>Hình thức</th><th>Tên hoạt động</th><th>Ngày</th><th>Giờ tín chỉ</th><th>Bằng chứng</th></tr></thead>
-      <tbody>${acts.map((a,i)=>`<tr><td>${a.loaiHinh}</td><td>${a.tenHoatDong}</td><td>${fmtDate(a.ngayThamGia)}</td><td>${a.soGioTinChi}</td>
+      ${acts.length? `<table><thead><tr><th>Hình thức</th><th>Tên hoạt động</th><th>Từ ngày - Đến ngày</th><th>Giờ tín chỉ</th><th>Số chứng nhận CME</th><th>Bằng chứng</th></tr></thead>
+      <tbody>${acts.map((a,i)=>`<tr><td>${a.loaiHinh}</td><td>${a.tenHoatDong}</td><td>${fmtDateRange(a.ngayThamGia, a.ngayKetThuc)}</td><td>${a.soGioTinChi}</td><td>${a.soChungNhanCME||'—'}</td>
         <td>${a.bangChung||'—'}${a.bangChungFile?`<br><button class="ghost small-btn" style="margin-top:4px" data-view-act-file="${i}">📎 Xem file</button>`:''}</td></tr>`).join('')}</tbody></table>`
       : `<div class="empty">Chưa có hoạt động nào được xác nhận.</div>`}
       <div style="text-align:right;margin-top:14px"><button class="secondary" id="m-close">Đóng</button></div>
@@ -1316,11 +1329,11 @@
       </div>
       <div class="card">
         <h3>Tổng hợp tất cả các đợt đã lập phiếu (${tongHop.length})</h3>
-        ${tongHop.length ? `<table><thead><tr><th>Hình thức</th><th>Tên hoạt động</th><th>Ngày tham gia</th><th>Giờ tín chỉ</th><th>Bằng chứng</th><th>Trạng thái</th><th>Lý do (nếu bị từ chối)</th></tr></thead>
+        ${tongHop.length ? `<table><thead><tr><th>Hình thức</th><th>Tên hoạt động</th><th>Từ ngày - Đến ngày</th><th>Giờ tín chỉ</th><th>Số chứng nhận CME</th><th>Bằng chứng</th><th>Trạng thái</th><th>Lý do (nếu bị từ chối)</th></tr></thead>
         <tbody>${tongHop.map(t=>{
           const pillColor = t._trangThai==='Đã duyệt' ? 'green' : t._trangThai==='Chờ duyệt' ? 'amber' : 'red';
           const evidence = t.bangChungFile ? '📎 Có file' : (t.bangChung ? '🔗 ' + t.bangChung : '—');
-          return `<tr><td>${t.loaiHinh}</td><td>${t.tenHoatDong}</td><td>${fmtDate(t.ngayThamGia)}</td><td>${t.soGioTinChi}</td><td>${evidence}</td><td><span class="pill ${pillColor}">${t._trangThai}</span></td><td style="font-size:12px">${t.lyDo||'—'}</td></tr>`;
+          return `<tr><td>${t.loaiHinh}</td><td>${t.tenHoatDong}</td><td>${fmtDateRange(t.ngayThamGia, t.ngayKetThuc)}</td><td>${t.soGioTinChi}</td><td>${t.soChungNhanCME||'—'}</td><td>${evidence}</td><td><span class="pill ${pillColor}">${t._trangThai}</span></td><td style="font-size:12px">${t.lyDo||'—'}</td></tr>`;
         }).join('')}</tbody></table>`
         : `<div class="empty">Chưa có đợt nào được lập phiếu.</div>`}
       </div>
@@ -1363,17 +1376,17 @@
       const tongLoc = list.reduce((s,a)=> s+(parseFloat(a.soGioTinChi)||0), 0);
       const wrap = document.getElementById('confirmed-wrap');
       const filterDesc = filterDescText(fromQ, toQ);
-      wrap.innerHTML = list.length ? `<table><thead><tr><th>Hình thức</th><th>Tên hoạt động</th><th>Ngày</th><th>Giờ tín chỉ</th><th>Bằng chứng</th></tr></thead>
-        <tbody>${list.map(a=>`<tr><td>${a.loaiHinh}</td><td>${a.tenHoatDong}</td><td>${fmtDate(a.ngayThamGia)}</td><td>${a.soGioTinChi}</td><td>${a.bangChungFile? '📎 Có file' : (a.bangChung? '🔗 ' + a.bangChung : '—')}</td></tr>`).join('')}
-        <tr><td colspan="4" style="text-align:right;font-weight:bold">Tổng cộng</td><td style="font-weight:bold">${tongLoc.toFixed(1)} giờ</td></tr></tbody></table>`
+      wrap.innerHTML = list.length ? `<table><thead><tr><th>Hình thức</th><th>Tên hoạt động</th><th>Từ ngày - Đến ngày</th><th>Giờ tín chỉ</th><th>Số chứng nhận CME</th><th>Bằng chứng</th></tr></thead>
+        <tbody>${list.map(a=>`<tr><td>${a.loaiHinh}</td><td>${a.tenHoatDong}</td><td>${fmtDateRange(a.ngayThamGia, a.ngayKetThuc)}</td><td>${a.soGioTinChi}</td><td>${a.soChungNhanCME||'—'}</td><td>${a.bangChungFile? '📎 Có file' : (a.bangChung? '🔗 ' + a.bangChung : '—')}</td></tr>`).join('')}
+        <tr><td colspan="4" style="text-align:right;font-weight:bold">Tổng cộng</td><td style="font-weight:bold">${tongLoc.toFixed(1)} giờ</td><td></td></tr></tbody></table>`
         : `<div class="empty">Không có hoạt động đã xác nhận phù hợp${filterDesc ? ' với bộ lọc trên' : ''}.</div>`;
     }
     function renderPendingTable(fromQ, toQ){
       const list = myPending.filter(p=> dateInRange(p.ngayThamGia, fromQ, toQ));
       const wrap = document.getElementById('pending-wrap');
       const filterDesc = filterDescText(fromQ, toQ);
-      wrap.innerHTML = list.length ? `<table><thead><tr><th>Hình thức</th><th>Tên hoạt động</th><th>Ngày</th><th>Giờ</th><th>Bằng chứng</th><th>Trạng thái</th><th></th></tr></thead>
-        <tbody>${list.map(p=>`<tr><td>${p.loaiHinh}</td><td>${p.tenHoatDong}</td><td>${fmtDate(p.ngayThamGia)}</td><td>${p.soGioTinChi}</td><td>${p.bangChungFile? '📎 Có file' : (p.bangChung? '🔗 ' + p.bangChung : '—')}</td><td><span class="pill amber">Chờ duyệt</span></td>
+      wrap.innerHTML = list.length ? `<table><thead><tr><th>Hình thức</th><th>Tên hoạt động</th><th>Từ ngày - Đến ngày</th><th>Giờ</th><th>Số chứng nhận CME</th><th>Bằng chứng</th><th>Trạng thái</th><th></th></tr></thead>
+        <tbody>${list.map(p=>`<tr><td>${p.loaiHinh}</td><td>${p.tenHoatDong}</td><td>${fmtDateRange(p.ngayThamGia, p.ngayKetThuc)}</td><td>${p.soGioTinChi}</td><td>${p.soChungNhanCME||'—'}</td><td>${p.bangChungFile? '📎 Có file' : (p.bangChung? '🔗 ' + p.bangChung : '—')}</td><td><span class="pill amber">Chờ duyệt</span></td>
           <td><button class="ghost small-btn" data-edit-pending="${p.id}">✏️ Sửa</button> <button class="ghost small-btn" data-del-pending="${p.id}">🗑️ Xoá</button></td></tr>`).join('')}</tbody></table>`
         : `<div class="empty">Không có hoạt động đang chờ duyệt${filterDesc ? ' phù hợp với bộ lọc trên' : ''}.</div>`;
       wrap.querySelectorAll('[data-edit-pending]').forEach(b=>{
@@ -1393,8 +1406,8 @@
       const list = myRejected.filter(p=> dateInRange(p.ngayThamGia, fromQ, toQ));
       const wrap = document.getElementById('rejected-wrap');
       const filterDesc = filterDescText(fromQ, toQ);
-      wrap.innerHTML = list.length ? `<table><thead><tr><th>Hình thức</th><th>Tên hoạt động</th><th>Ngày</th><th>Giờ</th><th>Bằng chứng</th><th>Ngày từ chối</th><th>Lý do</th></tr></thead>
-        <tbody>${list.map(p=>`<tr><td>${p.loaiHinh}</td><td>${p.tenHoatDong}</td><td>${fmtDate(p.ngayThamGia)}</td><td>${p.soGioTinChi}</td><td>${p.bangChungFile? '📎 Có file' : (p.bangChung? '🔗 ' + p.bangChung : '—')}</td><td>${fmtDate(p.rejectedAt)}</td><td style="font-size:12px">${p.lyDo||'—'}</td></tr>`).join('')}</tbody></table>`
+      wrap.innerHTML = list.length ? `<table><thead><tr><th>Hình thức</th><th>Tên hoạt động</th><th>Từ ngày - Đến ngày</th><th>Giờ</th><th>Số chứng nhận CME</th><th>Bằng chứng</th><th>Ngày từ chối</th><th>Lý do</th></tr></thead>
+        <tbody>${list.map(p=>`<tr><td>${p.loaiHinh}</td><td>${p.tenHoatDong}</td><td>${fmtDateRange(p.ngayThamGia, p.ngayKetThuc)}</td><td>${p.soGioTinChi}</td><td>${p.soChungNhanCME||'—'}</td><td>${p.bangChungFile? '📎 Có file' : (p.bangChung? '🔗 ' + p.bangChung : '—')}</td><td>${fmtDate(p.rejectedAt)}</td><td style="font-size:12px">${p.lyDo||'—'}</td></tr>`).join('')}</tbody></table>`
         : `<div class="empty">Không có hoạt động bị từ chối/huỷ${filterDesc ? ' phù hợp với bộ lọc trên' : ''}.</div>`;
     }
     function applyDateFilter(){
@@ -1412,8 +1425,8 @@
     document.getElementById('ep-clear').onclick = ()=>{ document.getElementById('ep-from').value=''; document.getElementById('ep-to').value=''; applyDateFilter(); };
     applyDateFilter();
     document.getElementById('emp-export-word').onclick = ()=>{
-      const rows = h.activities.map(a=>[a.loaiHinh, a.tenHoatDong, fmtDate(a.ngayThamGia), a.soGioTinChi, 'Đã xác nhận'])
-        .concat(myPending.map(p=>[p.loaiHinh, p.tenHoatDong, fmtDate(p.ngayThamGia), p.soGioTinChi, 'Chờ duyệt']));
+      const rows = h.activities.map(a=>[a.loaiHinh, a.tenHoatDong, fmtDateRange(a.ngayThamGia, a.ngayKetThuc), a.soGioTinChi, a.soChungNhanCME||'—', 'Đã xác nhận'])
+        .concat(myPending.map(p=>[p.loaiHinh, p.tenHoatDong, fmtDateRange(p.ngayThamGia, p.ngayKetThuc), p.soGioTinChi, p.soChungNhanCME||'—', 'Chờ duyệt']));
       const tongXacNhan = h.activities.reduce((s,a)=> s+(parseFloat(a.soGioTinChi)||0), 0);
       const tongChoDuyet = myPending.reduce((s,p)=> s+(parseFloat(p.soGioTinChi)||0), 0);
       const summaryTable = {
@@ -1422,15 +1435,15 @@
         values: [tongXacNhan.toFixed(1) + ' giờ', tongChoDuyet.toFixed(1) + ' giờ', (tongXacNhan+tongChoDuyet).toFixed(1) + ' giờ', REQUIRED_HOURS + ' giờ']
       };
       exportWordTable('Hồ sơ Cập nhật kiến thức y khoa liên tục',
-        ['Hình thức','Tên hoạt động','Ngày','Giờ tín chỉ','Trạng thái'], rows,
+        ['Hình thức','Tên hoạt động','Từ ngày - Đến ngày','Giờ tín chỉ','Số chứng nhận CME','Trạng thái'], rows,
         'ho_so_cnkt_' + emp.hoTen.replace(/\s+/g,'_') + '_' + todayISO() + '.doc',
         { trichYeu: 'Của: ' + emp.hoTen + ' (' + (emp.gioiTinh||'—') + (emp.ngaySinh?(', sinh '+fmtDate(emp.ngaySinh)):'') + ') — ' + emp.chucDanh + (uName!=='—'? (' — ' + uName) : '') + ' — Số CCHN: ' + (emp.soCCHN||'—') + ', cấp ngày ' + fmtDate(emp.ngayCapCCHN), summaryTable: summaryTable });
     };
     document.getElementById('emp-export-excel').onclick = ()=>{
       const rows = [];
-      h.activities.forEach(a=> rows.push([a.loaiHinh, a.tenHoatDong, fmtDate(a.ngayThamGia), a.soGioTinChi, 'Đã xác nhận']));
-      myPending.forEach(p=> rows.push([p.loaiHinh, p.tenHoatDong, fmtDate(p.ngayThamGia), p.soGioTinChi, 'Chờ duyệt']));
-      exportXlsxGeneric(["Hình thức","Tên hoạt động","Ngày","Giờ tín chỉ","Trạng thái"], rows, 'ho_so_cnkt_' + emp.hoTen.replace(/\s+/g,'_') + '_' + todayISO() + '.xlsx', 'HoSoCaNhan');
+      h.activities.forEach(a=> rows.push([a.loaiHinh, a.tenHoatDong, fmtDateRange(a.ngayThamGia, a.ngayKetThuc), a.soGioTinChi, a.soChungNhanCME||'—', 'Đã xác nhận']));
+      myPending.forEach(p=> rows.push([p.loaiHinh, p.tenHoatDong, fmtDateRange(p.ngayThamGia, p.ngayKetThuc), p.soGioTinChi, p.soChungNhanCME||'—', 'Chờ duyệt']));
+      exportXlsxGeneric(["Hình thức","Tên hoạt động","Từ ngày - Đến ngày","Giờ tín chỉ","Số chứng nhận CME","Trạng thái"], rows, 'ho_so_cnkt_' + emp.hoTen.replace(/\s+/g,'_') + '_' + todayISO() + '.xlsx', 'HoSoCaNhan');
     };
   }
 
@@ -1443,12 +1456,14 @@
         <div class="field"><label>Hình thức cập nhật</label>
           <select id="ep-loaihinh">${LOAI_HINH.map(l=>`<option ${p.loaiHinh===l?'selected':''}>${l}</option>`).join('')}</select>
         </div>
-        <div class="field"><label>Ngày tham gia</label><input id="ep-ngay" type="date" value="${p.ngayThamGia}" /></div>
+        <div class="field"><label>Từ ngày tham gia</label><input id="ep-ngay" type="date" value="${p.ngayThamGia}" /></div>
+        <div class="field"><label>Đến ngày tham gia</label><input id="ep-ngayden" type="date" value="${p.ngayKetThuc||p.ngayThamGia}" /></div>
       </div>
       <div class="field"><label>Tên hoạt động</label><input id="ep-ten" value="${p.tenHoatDong}" /></div>
       <div class="row-flex">
         <div class="field"><label>Đơn vị tổ chức</label><input id="ep-donvi" value="${p.donViToChuc||''}" /></div>
         <div class="field"><label>Số giờ tín chỉ</label><input id="ep-gio" type="number" step="0.5" value="${p.soGioTinChi}" /></div>
+        <div class="field"><label>Số chứng nhận CME</label><input id="ep-sochungnhan" value="${p.soChungNhanCME||''}" /></div>
       </div>
       <div class="field"><label>🔗 Bằng chứng — số chứng nhận / dán đường link tài liệu</label><textarea id="ep-bangchung" rows="2" placeholder="VD: https://... hoặc Giấy chứng nhận số 123/CN-...">${p.bangChung||''}</textarea></div>
       <div class="field">
@@ -1530,9 +1545,11 @@
       if (pendingFile && pendingFile.isBlurry && !pendingFile.blurConfirmed){ errBox.textContent = '⚠ Ảnh có thể bị mờ — vui lòng xác nhận hoặc chọn ảnh khác.'; errBox.style.display='block'; return; }
       p.loaiHinh = overlay.querySelector('#ep-loaihinh').value;
       p.ngayThamGia = overlay.querySelector('#ep-ngay').value;
+      p.ngayKetThuc = overlay.querySelector('#ep-ngayden').value || p.ngayThamGia;
       p.tenHoatDong = ten;
       p.donViToChuc = overlay.querySelector('#ep-donvi').value.trim();
       p.soGioTinChi = gio;
+      p.soChungNhanCME = overlay.querySelector('#ep-sochungnhan').value.trim();
       p.bangChung = bangChungText;
       p.bangChungFile = pendingFile ? pendingFile.dataUrl : '';
       p.bangChungFileType = pendingFile ? pendingFile.type : '';
@@ -2007,11 +2024,12 @@
               <button class="secondary" id="btn-export-pending-excel">📊 Xuất Excel</button>
             </div>
             <table>
-              <thead><tr><th>Khoa/Phòng</th><th>Nhân viên</th><th>Hình thức</th><th>Hoạt động</th><th>Ngày</th><th>Giờ</th><th>Bằng chứng</th><th></th></tr></thead>
+              <thead><tr><th>Khoa/Phòng</th><th>Nhân viên</th><th>Hình thức</th><th>Hoạt động</th><th>Từ ngày - Đến ngày</th><th>Giờ</th><th>Số chứng nhận CME</th><th>Bằng chứng</th><th></th></tr></thead>
               <tbody>${list.map(p=>`
                 <tr>
                   <td>${p.donViName}</td><td>${p.empName}</td><td>${p.loaiHinh}</td><td>${p.tenHoatDong}</td>
-                  <td>${fmtDate(p.ngayThamGia)}</td><td>${p.soGioTinChi}</td>
+                  <td>${fmtDateRange(p.ngayThamGia, p.ngayKetThuc)}</td><td>${p.soGioTinChi}</td>
+                  <td>${p.soChungNhanCME||'—'}</td>
                   <td style="max-width:180px;font-size:12px">${p.bangChung||'—'}${evidenceFileHtml(p)}</td>
                   <td><button class="small-btn" data-approve="${p.id}">✅ Xác nhận</button> <button class="ghost small-btn" data-reject="${p.id}">❌ Từ chối</button></td>
                 </tr>
@@ -2021,13 +2039,13 @@
         `;
         if (list.length){
           document.getElementById('btn-export-pending-word').onclick = ()=>{
-            const headers = ['Khoa/Phòng','Nhân viên','Hình thức','Hoạt động','Ngày','Giờ','Bằng chứng'];
-            const rows = list.map(p=>[p.donViName, p.empName, p.loaiHinh, p.tenHoatDong, fmtDate(p.ngayThamGia), p.soGioTinChi, p.bangChung||'—']);
+            const headers = ['Khoa/Phòng','Nhân viên','Hình thức','Hoạt động','Từ ngày - Đến ngày','Giờ','Số chứng nhận CME','Bằng chứng'];
+            const rows = list.map(p=>[p.donViName, p.empName, p.loaiHinh, p.tenHoatDong, fmtDateRange(p.ngayThamGia, p.ngayKetThuc), p.soGioTinChi, p.soChungNhanCME||'—', p.bangChung||'—']);
             exportWordTable('Danh sách hoạt động chờ duyệt', headers, rows, 'cnkt_cho_duyet_'+todayISO()+'.doc', { trichYeu: scopeLabel() });
           };
           document.getElementById('btn-export-pending-excel').onclick = ()=>{
-            exportCsvGeneric(['Khoa/Phòng','Nhân viên','Hình thức','Hoạt động','Ngày','Giờ','Bằng chứng'],
-              list.map(p=>[p.donViName, p.empName, p.loaiHinh, p.tenHoatDong, fmtDate(p.ngayThamGia), p.soGioTinChi, p.bangChung||'']),
+            exportCsvGeneric(['Khoa/Phòng','Nhân viên','Hình thức','Hoạt động','Từ ngày - Đến ngày','Giờ','Số chứng nhận CME','Bằng chứng'],
+              list.map(p=>[p.donViName, p.empName, p.loaiHinh, p.tenHoatDong, fmtDateRange(p.ngayThamGia, p.ngayKetThuc), p.soGioTinChi, p.soChungNhanCME||'', p.bangChung||'']),
               'cnkt_cho_duyet_'+todayISO()+'.csv');
           };
         }
@@ -2041,7 +2059,7 @@
           b.onclick = async ()=>{
             const id = b.getAttribute('data-approve');
             const rec = state.pending.find(p=>p.id===id);
-            const confirmedRec = { id: rec.id, loaiHinh: rec.loaiHinh, tenHoatDong: rec.tenHoatDong, donViToChuc: rec.donViToChuc, ngayThamGia: rec.ngayThamGia, soGioTinChi: rec.soGioTinChi, bangChung: rec.bangChung, bangChungFile: rec.bangChungFile||'', bangChungFileType: rec.bangChungFileType||'', bangChungFileName: rec.bangChungFileName||'', trangThai:'Đã xác nhận', confirmedAt: todayISO() };
+            const confirmedRec = { id: rec.id, loaiHinh: rec.loaiHinh, tenHoatDong: rec.tenHoatDong, donViToChuc: rec.donViToChuc, ngayThamGia: rec.ngayThamGia, ngayKetThuc: rec.ngayKetThuc||rec.ngayThamGia, soChungNhanCME: rec.soChungNhanCME||'', soGioTinChi: rec.soGioTinChi, bangChung: rec.bangChung, bangChungFile: rec.bangChungFile||'', bangChungFileType: rec.bangChungFileType||'', bangChungFileName: rec.bangChungFileName||'', trangThai:'Đã xác nhận', confirmedAt: todayISO() };
             const acts = await getActivities(rec.empId);
             acts.push(confirmedRec);
             await saveActivities(rec.empId, acts);
@@ -2079,11 +2097,11 @@
               <button class="secondary" id="btn-export-approved-excel">📊 Xuất Excel</button>
             </div>
             <table>
-              <thead><tr><th>Khoa/Phòng</th><th>Nhân viên</th><th>Hình thức</th><th>Hoạt động</th><th>Ngày</th><th>Giờ</th><th>Ngày xác nhận</th><th>Bằng chứng</th></tr></thead>
+              <thead><tr><th>Khoa/Phòng</th><th>Nhân viên</th><th>Hình thức</th><th>Hoạt động</th><th>Từ ngày - Đến ngày</th><th>Giờ</th><th>Số chứng nhận CME</th><th>Ngày xác nhận</th><th>Bằng chứng</th></tr></thead>
               <tbody>${list.map(p=>`
                 <tr>
                   <td>${p.donViName}</td><td>${p.empName}</td><td>${p.loaiHinh}</td><td>${p.tenHoatDong}</td>
-                  <td>${fmtDate(p.ngayThamGia)}</td><td>${p.soGioTinChi}</td><td>${fmtDate(p.confirmedAt)}</td>
+                  <td>${fmtDateRange(p.ngayThamGia, p.ngayKetThuc)}</td><td>${p.soGioTinChi}</td><td>${p.soChungNhanCME||'—'}</td><td>${fmtDate(p.confirmedAt)}</td>
                   <td style="max-width:180px;font-size:12px">${p.bangChung||'—'}${evidenceFileHtml(p)}</td>
                 </tr>
               `).join('')}</tbody>
@@ -2092,15 +2110,15 @@
         `;
         if (list.length){
           document.getElementById('btn-export-approved-word').onclick = ()=>{
-            const headers = ['Khoa/Phòng','Nhân viên','Hình thức','Hoạt động','Ngày','Giờ','Ngày xác nhận','Bằng chứng'];
-            const rows = list.map(p=>[p.donViName, p.empName, p.loaiHinh, p.tenHoatDong, fmtDate(p.ngayThamGia), p.soGioTinChi, fmtDate(p.confirmedAt), p.bangChung||'—']);
+            const headers = ['Khoa/Phòng','Nhân viên','Hình thức','Hoạt động','Từ ngày - Đến ngày','Giờ','Số chứng nhận CME','Ngày xác nhận','Bằng chứng'];
+            const rows = list.map(p=>[p.donViName, p.empName, p.loaiHinh, p.tenHoatDong, fmtDateRange(p.ngayThamGia, p.ngayKetThuc), p.soGioTinChi, p.soChungNhanCME||'—', fmtDate(p.confirmedAt), p.bangChung||'—']);
             const tongGio = list.reduce((s,p)=> s+(parseFloat(p.soGioTinChi)||0), 0);
             exportWordTable('Danh sách hoạt động đã xác nhận giờ tín chỉ', headers, rows, 'cnkt_da_duyet_'+todayISO()+'.doc',
               { trichYeu: scopeLabel(), summaryTable: { title: 'Tổng hợp', headers: ['Số hoạt động đã duyệt','Tổng số giờ tín chỉ'], values: [list.length, tongGio.toFixed(1)+' giờ'] } });
           };
           document.getElementById('btn-export-approved-excel').onclick = ()=>{
-            exportCsvGeneric(['Khoa/Phòng','Nhân viên','Hình thức','Hoạt động','Ngày','Giờ','Ngày xác nhận','Bằng chứng'],
-              list.map(p=>[p.donViName, p.empName, p.loaiHinh, p.tenHoatDong, fmtDate(p.ngayThamGia), p.soGioTinChi, fmtDate(p.confirmedAt), p.bangChung||'']),
+            exportCsvGeneric(['Khoa/Phòng','Nhân viên','Hình thức','Hoạt động','Từ ngày - Đến ngày','Giờ','Số chứng nhận CME','Ngày xác nhận','Bằng chứng'],
+              list.map(p=>[p.donViName, p.empName, p.loaiHinh, p.tenHoatDong, fmtDateRange(p.ngayThamGia, p.ngayKetThuc), p.soGioTinChi, p.soChungNhanCME||'', fmtDate(p.confirmedAt), p.bangChung||'']),
               'cnkt_da_duyet_'+todayISO()+'.csv');
           };
         }
@@ -2121,11 +2139,11 @@
               <button class="secondary" id="btn-export-rejected-excel">📊 Xuất Excel</button>
             </div>
             <table>
-              <thead><tr><th>Khoa/Phòng</th><th>Nhân viên</th><th>Hình thức</th><th>Hoạt động</th><th>Ngày</th><th>Giờ</th><th>Bằng chứng</th><th>Ngày từ chối</th><th>Lý do</th></tr></thead>
+              <thead><tr><th>Khoa/Phòng</th><th>Nhân viên</th><th>Hình thức</th><th>Hoạt động</th><th>Từ ngày - Đến ngày</th><th>Giờ</th><th>Số chứng nhận CME</th><th>Bằng chứng</th><th>Ngày từ chối</th><th>Lý do</th></tr></thead>
               <tbody>${list.map(p=>`
                 <tr>
                   <td>${p.donViName}</td><td>${p.empName}</td><td>${p.loaiHinh}</td><td>${p.tenHoatDong}</td>
-                  <td>${fmtDate(p.ngayThamGia)}</td><td>${p.soGioTinChi}</td>
+                  <td>${fmtDateRange(p.ngayThamGia, p.ngayKetThuc)}</td><td>${p.soGioTinChi}</td><td>${p.soChungNhanCME||'—'}</td>
                   <td style="max-width:180px;font-size:12px">${p.bangChung||'—'}${evidenceFileHtml(p)}</td>
                   <td>${fmtDate(p.rejectedAt)}</td><td>${p.lyDo||'—'}</td>
                 </tr>
@@ -2135,13 +2153,13 @@
         `;
         if (list.length){
           document.getElementById('btn-export-rejected-word').onclick = ()=>{
-            const headers = ['Khoa/Phòng','Nhân viên','Hình thức','Hoạt động','Ngày','Giờ','Bằng chứng','Ngày từ chối','Lý do'];
-            const rows = list.map(p=>[p.donViName, p.empName, p.loaiHinh, p.tenHoatDong, fmtDate(p.ngayThamGia), p.soGioTinChi, p.bangChung||'—', fmtDate(p.rejectedAt), p.lyDo||'—']);
+            const headers = ['Khoa/Phòng','Nhân viên','Hình thức','Hoạt động','Từ ngày - Đến ngày','Giờ','Số chứng nhận CME','Bằng chứng','Ngày từ chối','Lý do'];
+            const rows = list.map(p=>[p.donViName, p.empName, p.loaiHinh, p.tenHoatDong, fmtDateRange(p.ngayThamGia, p.ngayKetThuc), p.soGioTinChi, p.soChungNhanCME||'—', p.bangChung||'—', fmtDate(p.rejectedAt), p.lyDo||'—']);
             exportWordTable('Danh sách hoạt động đã từ chối / huỷ', headers, rows, 'cnkt_tu_choi_'+todayISO()+'.doc', { trichYeu: scopeLabel() });
           };
           document.getElementById('btn-export-rejected-excel').onclick = ()=>{
-            exportCsvGeneric(['Khoa/Phòng','Nhân viên','Hình thức','Hoạt động','Ngày','Giờ','Bằng chứng','Ngày từ chối','Lý do'],
-              list.map(p=>[p.donViName, p.empName, p.loaiHinh, p.tenHoatDong, fmtDate(p.ngayThamGia), p.soGioTinChi, p.bangChung||'', fmtDate(p.rejectedAt), p.lyDo||'']),
+            exportCsvGeneric(['Khoa/Phòng','Nhân viên','Hình thức','Hoạt động','Từ ngày - Đến ngày','Giờ','Số chứng nhận CME','Bằng chứng','Ngày từ chối','Lý do'],
+              list.map(p=>[p.donViName, p.empName, p.loaiHinh, p.tenHoatDong, fmtDateRange(p.ngayThamGia, p.ngayKetThuc), p.soGioTinChi, p.soChungNhanCME||'', p.bangChung||'', fmtDate(p.rejectedAt), p.lyDo||'']),
               'cnkt_tu_choi_'+todayISO()+'.csv');
           };
         }
