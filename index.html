@@ -109,9 +109,7 @@
 </script>
 </head>
 <body style="margin:0;">
-<div style="background:#e6f4ec;border-bottom:2px solid #1f7a4d;color:#155c3a;font-family:Arial,sans-serif;font-size:13px;padding:8px 16px;text-align:center;">
-  ☁ DỮ LIỆU LƯU TRÊN FIREBASE (dùng chung thật giữa các Khoa/Phòng và Admin trên nhiều máy khác nhau). Nếu thấy màn hình yêu cầu cấu hình, chỉ cần dán đoạn firebaseConfig vào ô có sẵn — không cần sửa file.
-</div>
+
 <div id="cnkt-root"></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
@@ -460,10 +458,34 @@
   }
   function invalidateHours(empId){ delete hoursCache[empId]; }
 
+  // Tải trước (song song, không tuần tự) dữ liệu hoạt động của nhiều nhân viên cùng lúc,
+  // giúp các màn hình danh sách/tổng quan hiển thị nhanh hơn rất nhiều khi dùng Firebase
+  // (đọc qua mạng), thay vì chờ từng người một như trước.
+  async function warmHoursCache(empIds, onProgress){
+    const todo = empIds.filter(id => !hoursCache[id]);
+    if (!todo.length) return;
+    const total = todo.length;
+    let done = 0;
+    if (onProgress) onProgress(0, total);
+    const BATCH = 30;
+    for (let i = 0; i < todo.length; i += BATCH){
+      const batch = todo.slice(i, i + BATCH);
+      await Promise.all(batch.map(async id => {
+        try {
+          const acts = await getActivities(id);
+          const hours = acts.reduce((s,a)=> s + (parseFloat(a.soGioTinChi)||0), 0);
+          hoursCache[id] = { hours, activities: acts };
+        } catch(e){ hoursCache[id] = { hours: 0, activities: [] }; }
+        done++;
+        if (onProgress) onProgress(done, total);
+      }));
+    }
+  }
+
   // Tính giờ tín chỉ và trạng thái CHỐT tại 1 ngày báo cáo (có thể là ngày quá khứ),
   // chỉ tính các hoạt động đã được xác nhận VÀ có ngày tham gia <= ngày báo cáo đó.
   async function ensureHoursAsOf(empId, refDate){
-    const acts = await getActivities(empId);
+    const acts = hoursCache[empId] ? hoursCache[empId].activities : await getActivities(empId);
     const actsAsOf = refDate ? acts.filter(a=> !a.ngayThamGia || a.ngayThamGia <= refDate) : acts;
     const hours = actsAsOf.reduce((s,a)=> s + (parseFloat(a.soGioTinChi)||0), 0);
     return { hours, activities: actsAsOf };
@@ -769,6 +791,7 @@
   async function renderEmpTable(wrap, list, editable, statusFilter, fromDate, toDate){
     if (!list.length){ wrap.innerHTML = `<div class="empty">Chưa có nhân viên nào. Hãy thêm nhân viên đầu tiên của khoa/phòng.</div>`; return []; }
     wrap.innerHTML = `<div class="empty">Đang tải dữ liệu giờ tín chỉ…</div>`;
+    await warmHoursCache(list.map(e=>e.id));
     const rows = [];
     const rowsData = [];
     for (const emp of list){
@@ -1614,11 +1637,15 @@
     async function renderBody(refDate){
       const isPast = refDate !== todayISO();
       const body = document.getElementById('ov-body');
-      body.innerHTML = `<div class="empty">Đang tổng hợp dữ liệu toàn viện…</div>`;
       const all = state.employees;
+      body.innerHTML = `<div class="empty" id="ov-progress">✅ Đã tải danh sách: ${all.length} nhân viên. Đang tính giờ tín chỉ…</div>`;
       let countDu=0, countChu=0, countNguy=0, countBT=0;
       const byUnit = {};
       const byRole = {};
+      await warmHoursCache(all.map(e=>e.id), (done, total)=>{
+        const el = document.getElementById('ov-progress');
+        if (el) el.textContent = total ? `⏳ Đã tải danh sách: ${all.length} nhân viên. Đang tải giờ tín chỉ qua mạng: ${done}/${total}… (lần đầu sẽ chậm hơn các lần sau)` : `✅ Đã tải danh sách: ${all.length} nhân viên. Đang tổng hợp…`;
+      });
       for (const emp of all){
         const h = await ensureHoursAsOf(emp.id, refDate);
         const st = statusOf(h.hours, emp, refDate);
@@ -1871,6 +1898,7 @@
     refDate = refDate || todayISO();
     const rows = [];
     let i = 0;
+    await warmHoursCache(state.employees.map(e=>e.id));
     for (const emp of state.employees){
       const h = await ensureHoursAsOf(emp.id, refDate);
       const st = statusOf(h.hours, emp, refDate);
@@ -2192,11 +2220,13 @@
           <button id="s-date-apply">🔎 Lọc</button>
         </div>
         <p class="muted" id="s-filter-desc" style="margin-top:4px"></p>
+        <div id="s-stats-wrap"></div>
         <div id="all-emp-wrap"></div>
         <button id="btn-export-emp-word" class="secondary" style="margin-top:12px">📝 Xuất Word danh sách đang lọc</button>
         <button id="btn-export-emp-excel" class="secondary" style="margin-top:12px">📊 Xuất Excel danh sách đang lọc</button>
       </div>
     `;
+    let chartScopeRole = null;
     let lastRowsData = [];
     let queryGen = 0;
     let selectedUnitId = '';
@@ -2211,6 +2241,7 @@
       const wrap = document.getElementById('all-emp-wrap');
       const nameQ = document.getElementById('s-name').value.trim().toLowerCase();
       const unitQ = selectedUnitId;
+      const u = state.config.units.find(x=>x.id===selectedUnitId);
       const statusQ = document.getElementById('s-status').value;
       const fromQ = document.getElementById('s-from').value;
       const toQ = document.getElementById('s-to').value;
@@ -2222,6 +2253,67 @@
       let list = state.employees.filter(e=> !nameQ || e.hoTen.toLowerCase().includes(nameQ));
       if (unitQ) list = list.filter(e=> e.donViId === unitQ);
       wrap.innerHTML = `<div class="empty">Đang tải…</div>`;
+      await warmHoursCache(list.map(e=>e.id));
+      if (myGen !== queryGen) return;
+      // ----- Thống kê + biểu đồ theo Đối tượng (chức danh) trong phạm vi đang lọc -----
+      const statsWrap = document.getElementById('s-stats-wrap');
+      const byRoleScope = {};
+      let scopeDu=0, scopeChu=0, scopeNguy=0, scopeBT=0;
+      for (const emp of list){
+        const h = await ensureHours(emp.id);
+        const st = statusOf(h.hours, emp);
+        if (st.key==='du') scopeDu++; else if (st.key==='chuy') scopeChu++; else if (st.key==='nguyco') scopeNguy++; else scopeBT++;
+        const roleName = emp.chucDanh || 'Chưa xác định';
+        if (!byRoleScope[roleName]) byRoleScope[roleName] = { total:0, du:0, chu:0, nguy:0, bt:0 };
+        byRoleScope[roleName].total++;
+        if (st.key==='du') byRoleScope[roleName].du++;
+        else if (st.key==='chuy') byRoleScope[roleName].chu++;
+        else if (st.key==='nguyco') byRoleScope[roleName].nguy++;
+        else byRoleScope[roleName].bt++;
+      }
+      if (myGen !== queryGen) return;
+      const roleEntriesScope = Object.entries(byRoleScope).sort((a,b)=> b[1].total - a[1].total);
+      if (list.length){
+        statsWrap.innerHTML = `
+          <div class="card" style="background:var(--lightbg, #f4f7f5)">
+            <h3>Thống kê theo phạm vi đang lọc ${u ? ('— Khoa/Phòng: ' + u.name) : '(toàn viện)'}</h3>
+            <div class="stat-grid">
+              <div class="stat"><div class="num">👥 ${list.length}</div><div class="lbl">Tổng nhân viên</div></div>
+              <div class="stat green"><div class="num">✅ ${scopeDu}</div><div class="lbl">Đã đủ giờ</div></div>
+              <div class="stat amber"><div class="num">⚠️ ${scopeChu}</div><div class="lbl">Cần chú ý</div></div>
+              <div class="stat red"><div class="num">🚨 ${scopeNguy}</div><div class="lbl">Nguy cơ chưa đủ</div></div>
+            </div>
+            <h3 style="margin-top:16px">Biểu đồ theo Đối tượng (chức danh) trong phạm vi đang lọc</h3>
+            <div style="position:relative;height:${Math.max(220, roleEntriesScope.length*36)}px">
+              <canvas id="chart-scope-role"></canvas>
+            </div>
+          </div>
+        `;
+        if (window.Chart){
+          if (chartScopeRole) chartScopeRole.destroy();
+          const cGreen='#1f7a4d', cAmber='#b3760a', cRed='#a3271f', cGray='#8a8473';
+          const roleNamesScope = roleEntriesScope.map(e=>e[0]);
+          chartScopeRole = new Chart(document.getElementById('chart-scope-role'), {
+            type: 'bar',
+            data: {
+              labels: roleNamesScope,
+              datasets: [
+                { label: 'Đã đủ', data: roleNamesScope.map(n=>byRoleScope[n].du), backgroundColor: cGreen },
+                { label: 'Cần chú ý', data: roleNamesScope.map(n=>byRoleScope[n].chu), backgroundColor: cAmber },
+                { label: 'Nguy cơ', data: roleNamesScope.map(n=>byRoleScope[n].nguy), backgroundColor: cRed },
+                { label: 'Đang thực hiện', data: roleNamesScope.map(n=>byRoleScope[n].bt), backgroundColor: cGray }
+              ]
+            },
+            options: {
+              indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+              scales: { x: { stacked: true }, y: { stacked: true } },
+              plugins: { legend: { position: 'bottom' } }
+            }
+          });
+        }
+      } else {
+        statsWrap.innerHTML = '';
+      }
       const rows = [];
       const rowsData = [];
       for (const emp of list){
@@ -2528,9 +2620,7 @@
       if (!confirm('XOÁ SẠCH toàn bộ dữ liệu hiện tại (nhân viên, đơn vị, hoạt động CNKT, lịch sử duyệt) và nạp lại 1.417 nhân viên chính thức? Hành động này không thể hoàn tác.')) return;
       const status = document.getElementById('reset-status');
       status.textContent = 'Đang xoá dữ liệu cũ…';
-      for (const emp of state.employees){
-        await window.storage.delete('activities:'+emp.id, true).catch(()=>{});
-      }
+      await Promise.all(state.employees.map(emp => window.storage.delete('activities:'+emp.id, true).catch(()=>{})));
       state.employees = [];
       state.config = { adminPin: state.config.adminPin || '0000', units: [], seeded: false };
       state.pending = [];
