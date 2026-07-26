@@ -605,7 +605,20 @@
   // Lý do: gộp chung khiến MỌI thao tác lưu (kể cả sửa 1 trường nhỏ) phải tải lại toàn bộ
   // dữ liệu của TẤT CẢ học viên (kể cả ảnh đính kèm nặng) lên máy chủ mỗi lần — rất chậm
   // và dễ vượt giới hạn dung lượng khi số học viên/ảnh tăng lên.
-  async function saveTrainee(t){ if (t && t.id) await window.storage.set('trainees:'+t.id, JSON.stringify(t), true); }
+  async function saveTrainee(t){
+    if (!t || !t.id) return;
+    try {
+      const res = await window.storage.set('trainees:'+t.id, JSON.stringify(t), true);
+      if (!res){
+        alert('⚠ Lưu hồ sơ "'+(t.hoTen||'')+'" không thành công (không có phản hồi từ máy chủ). Vui lòng thử lại sau vài giây — thao tác vừa rồi CHƯA được lưu.');
+        throw new Error('saveTrainee: storage.set trả về null/false');
+      }
+    } catch(err){
+      console.error('saveTrainee lỗi:', err);
+      alert('⚠ Lỗi khi lưu hồ sơ "'+(t.hoTen||'')+'": ' + (err && err.message ? err.message : 'không rõ lỗi') + '\n\nThao tác vừa rồi CHƯA được lưu — vui lòng thử lại. Nếu thao tác liên tiếp quá nhanh, hãy đợi vài giây rồi thử lại.');
+      throw err;
+    }
+  }
   async function deleteTraineeStorage(id){ try { await window.storage.delete('trainees:'+id, true); } catch(e){} }
   async function saveTrainees(){
     // Chỉ dùng cho các thao tác hàng loạt (di trú dữ liệu cũ...). Các màn hình bình thường
@@ -624,18 +637,24 @@
         try { await window.storage.delete('trainees', true); } catch(e){}
       }
     } catch(e){ /* không có key cũ hoặc đã di trú rồi — bỏ qua */ }
-    // Đọc danh sách theo từng bản ghi riêng
+    // Đọc danh sách theo từng bản ghi riêng — tải SONG SONG theo từng lô nhỏ (nhanh hơn nhiều
+    // so với tải tuần tự từng cái một, đặc biệt khi số học viên tăng lên).
     let keys = [];
     try {
       const listRes = await window.storage.list('trainees:', true);
       keys = (listRes && listRes.keys) || [];
     } catch(e){ keys = []; }
     const out = [];
-    for (const k of keys){
-      try {
-        const rec = await window.storage.get(k, true);
-        if (rec && rec.value) out.push(JSON.parse(rec.value));
-      } catch(e){ /* bỏ qua bản ghi lỗi, không chặn tải các bản ghi khác */ }
+    const BATCH = 8;
+    for (let i = 0; i < keys.length; i += BATCH){
+      const batchKeys = keys.slice(i, i + BATCH);
+      const results = await Promise.all(batchKeys.map(async k=>{
+        try {
+          const rec = await window.storage.get(k, true);
+          return (rec && rec.value) ? JSON.parse(rec.value) : null;
+        } catch(e){ return null; /* bỏ qua bản ghi lỗi, không chặn tải các bản ghi khác */ }
+      }));
+      results.forEach(r=>{ if (r) out.push(r); });
     }
     return out;
   }
@@ -1111,7 +1130,11 @@
               <div class="field"><label>Chọn người hướng dẫn (nhân viên đủ điều kiện của khoa)</label>
                 <select data-req-hd="${r.id}">
                   <option value="">— Chọn người hướng dẫn —</option>
-                  ${staffOptions.map(e=>`<option value="${e.id}" ${r.nguoiHuongDanId===e.id?'selected':''}>${e.hoTen}</option>`).join('')}
+                  ${staffOptions.map(e=>{
+                    const cnt = countMenteesAtRange(e.id, r.tuNgay, r.denNgay);
+                    const full = cnt >= 5;
+                    return `<option value="${e.id}" ${r.nguoiHuongDanId===e.id?'selected':''} ${full?'disabled':''}>${e.hoTen} (${cnt}/5 đang hướng dẫn)${full?' — Đã đủ 5':''}</option>`;
+                  }).join('')}
                 </select>
                 ${!staffOptions.length ? '<p class="muted" style="color:var(--red)">Khoa chưa có nhân viên nào được đánh dấu "Đủ điều kiện hướng dẫn". Liên hệ Phòng CĐT để cập nhật.</p>' : ''}
               </div>
@@ -6061,11 +6084,10 @@
       <p class="muted" style="margin-top:-6px">Tổng số tháng đã phân khoa (đã lưu): <b id="hv-total-months">${totalMonthsSaved.toFixed(1)}</b> tháng</p>
       <div class="row-flex" style="margin-bottom:10px">
         <button type="button" class="secondary" id="pk-export-congvan">📄 Xuất Công văn phân công (gửi khoa)</button>
-        <button type="button" class="secondary" id="pk-export-quyetdinh">📄 Xuất Quyết định phân công người hướng dẫn</button>
         <button type="button" class="secondary" id="pk-export-hoanthanh">🎓 Xuất Giấy xác nhận hoàn thành thực hành</button>
         <button type="button" class="secondary" id="pk-export-nhanxettonghop">📊 Xuất Bản nhận xét tổng hợp cuối khóa</button>
       </div>
-      <p class="muted" style="margin-top:-6px;font-style:italic">💡 Cả 2 file sẽ tự điền theo đúng các giai đoạn đã lưu (${totalMonthsSaved.toFixed(1)} tháng) — anh có thể xuất bất cứ lúc nào, kể cả khi chưa đủ tổng số tháng, để rà soát trước.</p>
+      <p class="muted" style="margin-top:-6px;font-style:italic">💡 Các file trên sẽ tự điền theo đúng các giai đoạn đã lưu (${totalMonthsSaved.toFixed(1)} tháng) — anh có thể xuất bất cứ lúc nào, kể cả khi chưa đủ tổng số tháng, để rà soát trước. Riêng <b>Quyết định phân công người hướng dẫn (kèm Phụ lục I, II)</b> — văn bản có giá trị pháp lý chính thức, cần lưu Số QĐ + ngày ký + bản đã ký scan — vào mục <b>"📜 Quyết định"</b> ở danh sách học viên để thực hiện, không xuất ở đây.</p>
       <div id="hv-stage-list"></div>
       <div id="hv-pending-assign-list"></div>
       <div class="card" style="margin-top:14px;background:#fff;padding:10px 16px">
@@ -6145,7 +6167,6 @@
     setPkMode('dnpc');
     overlay.querySelector('#pk-mode-dnpc-btn').onclick = ()=> setPkMode('dnpc');
     overlay.querySelector('#pk-export-congvan').onclick = ()=> exportCongVanPhanCongFilled(t);
-    overlay.querySelector('#pk-export-quyetdinh').onclick = ()=> exportQuyetDinhPhanCongFilled(t);
     overlay.querySelector('#pk-export-hoanthanh').onclick = ()=>{
       const chuaKetThuc = stages.some(s=>s.trangThai!=='Đã kết thúc');
       if (chuaKetThuc && !confirm('Vẫn còn giai đoạn chưa "Đã kết thúc". Bạn có chắc muốn xuất Giấy xác nhận hoàn thành không?')) return;
