@@ -1122,12 +1122,18 @@
         <h3>📋 Đề nghị phân công hướng dẫn từ Phòng Chỉ đạo tuyến</h3>
         <p class="muted" style="margin-top:-6px">Khoa/phòng tự chọn nhân viên đủ điều kiện hướng dẫn của khoa mình cho từng học viên, ký xác nhận — hệ thống tự đưa vào phụ lục theo dõi, không cần Phòng CĐT nhập lại.</p>
         ${!cho.length ? '<p class="muted">Hiện không có đề nghị nào đang chờ khoa phân công.</p>' : ''}
-        ${cho.map(({t,r})=>`
+        ${cho.map(({t,r})=>{
+          const daChonHD = !!r.nguoiHuongDanId;
+          const daNhapKy = !!(r.nguoiKy||'').trim();
+          const daKyHoacScan = !!(r.chuKyImage || r.fileDataUrl);
+          return `
           <div class="card" style="background:var(--amber-bg);border-color:var(--amber);margin-bottom:12px" data-req-card="${r.id}">
-            <b>${t.hoTen}</b> — ${t.chucDanhDangKy||''} <span class="muted">(${t.donViCuTri||'Chưa rõ đơn vị cử đi'})</span><br>
-            <span class="muted">Thời gian dự kiến: ${fmtDateRange(r.tuNgay, r.denNgay)} (${r.soThang} tháng)</span>
-            <div class="row-flex" style="margin-top:10px">
-              <div class="field"><label>Chọn người hướng dẫn (nhân viên đủ điều kiện của khoa)</label>
+            <div style="font-size:15px"><b>👤 ${t.hoTen}</b> — ${t.chucDanhDangKy||''} <span class="muted">(${t.donViCuTri||'Chưa rõ đơn vị cử đi'})</span></div>
+            <div class="muted" style="margin-top:2px">🗓️ Thời gian dự kiến thực hành tại khoa: <b>${fmtDateRange(r.tuNgay, r.denNgay)}</b> (${r.soThang} tháng)</div>
+
+            <div style="margin-top:14px;padding-top:10px;border-top:1px dashed var(--amber)">
+              <b>Bước 1 — Chọn người hướng dẫn của khoa mình</b> ${daChonHD?'<span class="pill green">✓ Đã chọn</span>':'<span class="pill" style="background:#eee">Chưa chọn</span>'}
+              <div class="field" style="margin-top:6px">
                 <select data-req-hd="${r.id}">
                   <option value="">— Chọn người hướng dẫn —</option>
                   ${staffOptions.map(e=>{
@@ -1136,20 +1142,33 @@
                     return `<option value="${e.id}" ${r.nguoiHuongDanId===e.id?'selected':''} ${full?'disabled':''}>${e.hoTen} (${cnt}/5 đang hướng dẫn)${full?' — Đã đủ 5':''}</option>`;
                   }).join('')}
                 </select>
-                ${!staffOptions.length ? '<p class="muted" style="color:var(--red)">Khoa chưa có nhân viên nào được đánh dấu "Đủ điều kiện hướng dẫn". Liên hệ Phòng CĐT để cập nhật.</p>' : ''}
+                ${!staffOptions.length ? '<p class="muted" style="color:var(--red)">⚠ Khoa chưa có nhân viên nào được đánh dấu "Đủ điều kiện hướng dẫn". Vào tab "👤 Nhân viên của khoa" để đánh dấu, hoặc liên hệ Phòng CĐT.</p>' : ''}
               </div>
-              <div class="field"><label>Người ký (Trưởng khoa/người được ủy quyền) *</label><input type="text" data-req-nguoiky="${r.id}" value="${r.nguoiKy||''}" placeholder="Họ và tên người ký xác nhận" /></div>
             </div>
-            <div class="row-flex" style="margin-top:10px;align-items:center">
-              <button type="button" class="secondary" data-req-sign="${r.id}">✍️ Ký trên màn hình</button>
-              <button type="button" class="secondary" data-req-print="${r.id}">🖨️ In phiếu để ký giấy</button>
-              <button type="button" class="secondary" data-req-attach="${r.id}">📎 Đính kèm bản đã ký (scan)</button>
-              ${r.chuKyImage ? `<img src="${r.chuKyImage}" style="height:44px;border:1px solid var(--line);border-radius:4px;background:#fff" title="Chữ ký đã vẽ" />` : ''}
-              ${(r.fileDataUrl) ? `<span class="pill green">📎 Đã đính kèm bản scan</span>` : ''}
+
+            <div style="margin-top:14px;padding-top:10px;border-top:1px dashed var(--amber)">
+              <b>Bước 2 — Ai là người ký xác nhận (Trưởng khoa/người được ủy quyền)?</b> ${daNhapKy?'<span class="pill green">✓ Đã nhập</span>':'<span class="pill" style="background:#eee">Chưa nhập</span>'}
+              <div class="field" style="margin-top:6px"><input type="text" data-req-nguoiky="${r.id}" value="${r.nguoiKy||''}" placeholder="Nhập họ và tên người ký xác nhận" /></div>
             </div>
-            <button data-req-confirm="${r.id}" style="margin-top:10px">✅ Xác nhận phân công</button>
+
+            <div style="margin-top:14px;padding-top:10px;border-top:1px dashed var(--amber)">
+              <b>Bước 3 — Xác nhận bằng chữ ký</b> ${daKyHoacScan?'<span class="pill green">✓ Đã có chữ ký</span>':'<span class="pill" style="background:#eee">Chưa có chữ ký</span>'} <span class="muted">(chọn 1 trong 2 cách)</span>
+              <div class="row-flex" style="margin-top:8px;align-items:center">
+                <button type="button" class="secondary" data-req-sign="${r.id}">✍️ Ký trực tiếp trên màn hình</button>
+                <span class="muted">— hoặc —</span>
+                <button type="button" class="secondary" data-req-print="${r.id}">🖨️ In phiếu để ký giấy</button>
+                <button type="button" class="secondary" data-req-attach="${r.id}">📎 rồi đính kèm bản đã ký (scan/chụp)</button>
+              </div>
+              <div class="row-flex" style="margin-top:8px;align-items:center">
+                ${r.chuKyImage ? `<span class="muted">Chữ ký đã vẽ:</span> <img src="${r.chuKyImage}" style="height:44px;border:1px solid var(--line);border-radius:4px;background:#fff" title="Chữ ký đã vẽ" />` : ''}
+                ${(r.fileDataUrl) ? `<span class="pill green">📎 Đã đính kèm bản scan</span>` : ''}
+              </div>
+            </div>
+
+            <button data-req-confirm="${r.id}" style="margin-top:16px;font-size:15px${(!daChonHD||!daNhapKy||!daKyHoacScan)?';opacity:0.55':''}">✅ Bước 4 — Xác nhận phân công (hoàn tất)</button>
+            ${(!daChonHD||!daNhapKy||!daKyHoacScan) ? '<p class="muted" style="margin-top:6px">👉 Hoàn thành đủ 3 bước trên rồi bấm nút này để gửi kết quả về Phòng Chỉ đạo tuyến.</p>' : ''}
           </div>
-        `).join('')}
+        `;}).join('')}
         ${xong.length ? `<h3 style="font-size:14px;margin-top:20px;border-top:1px solid var(--line);padding-top:12px">Đã phân công</h3>
           <table><thead><tr><th>Học viên</th><th>Thời gian</th><th>Người hướng dẫn</th><th>Người ký</th><th>Ngày ký</th></tr></thead>
           <tbody>${xong.map(({t,r})=>`<tr><td>${t.hoTen}</td><td>${fmtDateRange(r.tuNgay,r.denNgay)}</td><td>${r.nguoiHuongDan}</td><td>${r.nguoiKy}</td><td>${fmtDate(r.ngayKy)}</td></tr>`).join('')}</tbody></table>` : ''}
@@ -6088,6 +6107,8 @@
         <button type="button" class="secondary" id="pk-export-nhanxettonghop">📊 Xuất Bản nhận xét tổng hợp cuối khóa</button>
       </div>
       <p class="muted" style="margin-top:-6px;font-style:italic">💡 Các file trên sẽ tự điền theo đúng các giai đoạn đã lưu (${totalMonthsSaved.toFixed(1)} tháng) — anh có thể xuất bất cứ lúc nào, kể cả khi chưa đủ tổng số tháng, để rà soát trước. Riêng <b>Quyết định phân công người hướng dẫn (kèm Phụ lục I, II)</b> — văn bản có giá trị pháp lý chính thức, cần lưu Số QĐ + ngày ký + bản đã ký scan — vào mục <b>"📜 Quyết định"</b> ở danh sách học viên để thực hiện, không xuất ở đây.</p>
+      <h3 style="font-size:14px;margin:14px 0 4px;border-top:1px solid var(--line);padding-top:12px">✅ Giai đoạn thực hành đã xác nhận (dữ liệu chính thức — nguồn cho Quyết định, Công văn, Giấy xác nhận...)</h3>
+      <p class="muted" style="margin-top:-2px">Đây là nơi kiểm tra sau khi khoa đã phân công xong: mỗi khi khoa bấm "✅ Xác nhận phân công" ở màn hình của khoa, 1 dòng mới sẽ tự hiện ngay bên dưới — không cần CĐT nhập lại.</p>
       <div id="hv-stage-list"></div>
       <div id="hv-pending-assign-list"></div>
       <div class="card" style="margin-top:14px;background:#fff;padding:10px 16px">
