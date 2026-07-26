@@ -1174,6 +1174,27 @@
           <tbody>${xong.map(({t,r})=>`<tr><td>${t.hoTen}</td><td>${fmtDateRange(r.tuNgay,r.denNgay)}</td><td>${r.nguoiHuongDan}</td><td>${r.nguoiKy}</td><td>${fmtDate(r.ngayKy)}</td></tr>`).join('')}</tbody></table>` : ''}
       </div>
     `;
+    // Đồng bộ NGAY lựa chọn người hướng dẫn và tên người ký vào bộ nhớ (found.r) mỗi khi anh
+    // thay đổi — để nếu sau đó bấm "Ký trên màn hình"/"Đính kèm scan" (làm tải lại toàn bộ khối
+    // này để cập nhật chữ ký), lựa chọn/tên đã gõ KHÔNG bị mất/reset về trống nữa.
+    content.querySelectorAll('[data-req-hd]').forEach(sel=>{
+      sel.onchange = ()=>{
+        const reqId = sel.getAttribute('data-req-hd');
+        const found = pendingItems.find(x=>x.r.id===reqId);
+        if (!found) return;
+        found.r.nguoiHuongDanId = sel.value;
+        const emp = sel.value ? state.employees.find(e=>e.id===sel.value) : null;
+        found.r.nguoiHuongDan = emp ? emp.hoTen : '';
+      };
+    });
+    content.querySelectorAll('[data-req-nguoiky]').forEach(inp=>{
+      inp.oninput = ()=>{
+        const reqId = inp.getAttribute('data-req-nguoiky');
+        const found = pendingItems.find(x=>x.r.id===reqId);
+        if (!found) return;
+        found.r.nguoiKy = inp.value;
+      };
+    });
     content.querySelectorAll('[data-req-sign]').forEach(btn=>{
       btn.onclick = ()=>{
         const reqId = btn.getAttribute('data-req-sign');
