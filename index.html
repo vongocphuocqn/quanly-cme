@@ -301,6 +301,10 @@
     rejectedLog: [],
     rejectedEmployeesLog: [],
     trainees: [],
+    customTemplates: [],
+    docChecklist: [],
+    phieuTiepNhanSeq: 0,
+    hiddenBuiltinMau: [],
     employeeId: null,
     traineeId: null,
     approveView: 'pending',
@@ -405,7 +409,11 @@
           const isBlurry = blurScore < 18;
           resolve({ dataUrl: canvas.toDataURL('image/jpeg', 0.72), type: 'image', name: file.name, width: img.width, height: img.height, blurScore, isBlurry });
         };
-        img.onerror = function(){ reject(new Error('Lỗi đọc ảnh.')); };
+        img.onerror = function(){
+          // Không giải mã được làm ảnh (VD: định dạng HEIC trên iPhone, trình duyệt không hỗ trợ...)
+          // -> vẫn lưu file gốc, bỏ qua bước nén/kiểm tra mờ, còn hơn báo lỗi và chặn học viên.
+          resolve({ dataUrl: e.target.result, type: 'file', name: file.name });
+        };
         img.src = e.target.result;
       };
       reader.onerror = function(){ reject(new Error('Lỗi đọc file.')); };
@@ -435,13 +443,34 @@
   // (quy ước 1 tháng ≈ 30 ngày, khớp với cách monthsDecimal đang tính ở trên).
   function addMonthsDecimalToDate(fromIso, months){
     if (!fromIso || !months || months<=0) return '';
-    const days = Math.round(months*30) - 1;
-    if (days < 0) return fromIso;
-    const d = new Date(fromIso);
-    d.setDate(d.getDate() + days);
+    const d = new Date(fromIso + 'T00:00:00');
+    const wholeMonths = Math.floor(months);
+    const fracMonths = months - wholeMonths;
+    d.setMonth(d.getMonth() + wholeMonths);
+    if (fracMonths > 0.001){
+      d.setDate(d.getDate() + Math.round(fracMonths*30));
+    }
+    d.setDate(d.getDate() - 1);
     return d.toISOString().slice(0,10);
   }
   function showToast(msg){ state.toast = msg; render(); setTimeout(()=>{ state.toast=null; render(); }, 2600); }
+  // Thông báo nhẹ gắn ngay trong modal đang mở — dùng thay showToast() ở những chỗ modal cần
+  // giữ nguyên, không bị vẽ lại/đóng theo mỗi khi hiện thông báo (VD: gửi nhiều đề nghị liên tiếp).
+  function modalToast(overlay, msg){
+    const modalEl = overlay.querySelector('.modal');
+    if (!modalEl) { showToast(msg); return; }
+    let box = modalEl.querySelector('.modal-toast-box');
+    if (!box){
+      box = document.createElement('div');
+      box.className = 'modal-toast-box';
+      box.style.cssText = 'background:var(--navy);color:#fff;padding:8px 14px;border-radius:6px;margin-bottom:12px;font-size:13.5px;text-align:center';
+      modalEl.insertBefore(box, modalEl.firstChild);
+    }
+    box.textContent = msg;
+    box.style.display = '';
+    clearTimeout(box._hideTimer);
+    box._hideTimer = setTimeout(()=>{ box.style.display = 'none'; }, 3200);
+  }
 
   async function loadAll(){
     try {
@@ -484,9 +513,35 @@
       state.rejectedEmployeesLog = rje ? JSON.parse(rje.value) : [];
     } catch(e){ state.rejectedEmployeesLog = []; }
     try {
-      const tr = await window.storage.get('trainees', true);
-      state.trainees = tr ? JSON.parse(tr.value) : [];
+      state.trainees = await loadAllTraineesSplit();
     } catch(e){ state.trainees = []; }
+    // Migration: cấp Mã hồ sơ cho các học viên đã có từ trước (chưa từng có maHoSo)
+    let _hsChanged = false;
+    (state.trainees||[]).forEach(t=>{
+      if (!t.maHoSo){ t.maHoSo = genMaHoSo(); _hsChanged = true; }
+      if (t.daNopHoSo === undefined) t.daNopHoSo = true; // hồ sơ cũ coi như đã nộp/đã đầy đủ theo quy trình cũ
+    });
+    if (_hsChanged){ try { await saveTrainees(); } catch(e){} }
+    try {
+      const ct = await window.storage.get('custom_templates', true);
+      state.customTemplates = ct ? JSON.parse(ct.value) : [];
+    } catch(e){ state.customTemplates = []; }
+    try {
+      const dc = await window.storage.get('doc_checklist_config', true);
+      state.docChecklist = dc ? JSON.parse(dc.value) : null;
+    } catch(e){ state.docChecklist = null; }
+    if (!state.docChecklist || !state.docChecklist.length){
+      state.docChecklist = DOC_CHECKLIST_HV.map(d=>({...d}));
+      try { await saveDocChecklist(); } catch(e){}
+    }
+    try {
+      const pts = await window.storage.get('phieu_tiep_nhan_seq', true);
+      state.phieuTiepNhanSeq = pts ? (JSON.parse(pts.value)||0) : 0;
+    } catch(e){ state.phieuTiepNhanSeq = 0; }
+    try {
+      const hbm = await window.storage.get('hidden_builtin_mau', true);
+      state.hiddenBuiltinMau = hbm ? JSON.parse(hbm.value) : [];
+    } catch(e){ state.hiddenBuiltinMau = []; }
     try {
       const au = await window.storage.get('admin_users', true);
       state.adminUsers = au ? JSON.parse(au.value) : [];
@@ -546,7 +601,54 @@
   async function saveApprovedLog(){ await window.storage.set('approved_log', JSON.stringify(state.approvedLog), true); }
   async function saveRejectedLog(){ await window.storage.set('rejected_log', JSON.stringify(state.rejectedLog), true); }
   async function saveRejectedEmployeesLog(){ await window.storage.set('rejected_employees_log', JSON.stringify(state.rejectedEmployeesLog), true); }
-  async function saveTrainees(){ await window.storage.set('trainees', JSON.stringify(state.trainees), true); }
+  // ---- Lưu trữ theo TỪNG học viên (key riêng) thay vì gộp chung 1 key lớn ----
+  // Lý do: gộp chung khiến MỌI thao tác lưu (kể cả sửa 1 trường nhỏ) phải tải lại toàn bộ
+  // dữ liệu của TẤT CẢ học viên (kể cả ảnh đính kèm nặng) lên máy chủ mỗi lần — rất chậm
+  // và dễ vượt giới hạn dung lượng khi số học viên/ảnh tăng lên.
+  async function saveTrainee(t){ if (t && t.id) await window.storage.set('trainees:'+t.id, JSON.stringify(t), true); }
+  async function deleteTraineeStorage(id){ try { await window.storage.delete('trainees:'+id, true); } catch(e){} }
+  async function saveTrainees(){
+    // Chỉ dùng cho các thao tác hàng loạt (di trú dữ liệu cũ...). Các màn hình bình thường
+    // nên dùng saveTrainee(t) để chỉ lưu đúng 1 học viên vừa thay đổi, nhanh hơn nhiều.
+    for (const tr of (state.trainees||[])) await saveTrainee(tr);
+  }
+  async function loadAllTraineesSplit(){
+    // Di trú 1 lần: nếu còn key cũ gộp chung 'trainees' (mảng lớn), tách thành từng bản ghi riêng rồi xoá key cũ.
+    try {
+      const legacy = await window.storage.get('trainees', true);
+      if (legacy && legacy.value){
+        const arr = JSON.parse(legacy.value);
+        if (Array.isArray(arr)){
+          for (const tr of arr){ if (tr && tr.id) await saveTrainee(tr); }
+        }
+        try { await window.storage.delete('trainees', true); } catch(e){}
+      }
+    } catch(e){ /* không có key cũ hoặc đã di trú rồi — bỏ qua */ }
+    // Đọc danh sách theo từng bản ghi riêng
+    let keys = [];
+    try {
+      const listRes = await window.storage.list('trainees:', true);
+      keys = (listRes && listRes.keys) || [];
+    } catch(e){ keys = []; }
+    const out = [];
+    for (const k of keys){
+      try {
+        const rec = await window.storage.get(k, true);
+        if (rec && rec.value) out.push(JSON.parse(rec.value));
+      } catch(e){ /* bỏ qua bản ghi lỗi, không chặn tải các bản ghi khác */ }
+    }
+    return out;
+  }
+  async function saveCustomTemplates(){ await window.storage.set('custom_templates', JSON.stringify(state.customTemplates||[]), true); }
+  async function saveDocChecklist(){ await window.storage.set('doc_checklist_config', JSON.stringify(state.docChecklist||[]), true); }
+  async function savePhieuTiepNhanSeq(){ await window.storage.set('phieu_tiep_nhan_seq', JSON.stringify(state.phieuTiepNhanSeq||0), true); }
+  async function saveHiddenBuiltinMau(){ await window.storage.set('hidden_builtin_mau', JSON.stringify(state.hiddenBuiltinMau||[]), true); }
+  async function genSoPhieuTiepNhan(){
+    state.phieuTiepNhanSeq = (state.phieuTiepNhanSeq||0) + 1;
+    await savePhieuTiepNhanSeq();
+    const year = new Date().getFullYear();
+    return String(state.phieuTiepNhanSeq).padStart(3,'0') + '/' + year + '/PTNHSTH';
+  }
   async function getActivities(empId){
     try {
       const r = await window.storage.get('activities:'+empId, true);
@@ -683,30 +785,148 @@
     return digits.slice(-4).padStart(4,'0');
   }
   function effectiveTraineePin(t){ return t.pin || defaultTraineePin(t); }
+  // ---------- Mã hồ sơ (định danh đăng nhập của học viên, kiểu "mã sinh viên") ----------
+  // ---------- Chuẩn hóa dữ liệu nhập: Họ tên viết HOA, CCCD chỉ giữ số ----------
+  function toVNUpperName(str){ return (str||'').toUpperCase(); }
+  function digitsOnlyStr(str){ return (str||'').replace(/[^\d]/g,''); }
+  function bindNameUppercase(input){
+    if (!input) return;
+    input.addEventListener('blur', function(){ input.value = toVNUpperName(input.value.trim()); });
+  }
+  function bindDigitsOnly(input){
+    if (!input) return;
+    input.addEventListener('input', function(){
+      const pos = input.selectionStart;
+      const before = input.value;
+      input.value = digitsOnlyStr(input.value);
+      if (pos != null) input.setSelectionRange(pos - (before.length - input.value.length), pos - (before.length - input.value.length));
+    });
+  }
+  function genMaHoSo(){
+    const year = new Date().getFullYear();
+    let seq = (state.trainees||[]).length + 1;
+    let code;
+    do {
+      code = 'HS' + year + String(seq).padStart(4,'0');
+      seq++;
+    } while ((state.trainees||[]).some(t=>t.maHoSo===code));
+    return code;
+  }
 
   function renderLoginBody(){
     const body = document.getElementById('login-body');
     if (!body) return;
     if (state._loginMode === 'trainee'){
+      if (!state._traineeLoginSub) state._traineeLoginSub = 'select';
+      const sub = state._traineeLoginSub;
+      const switchRow = `
+        <div class="row-flex" style="margin-bottom:14px">
+          <button class="${sub==='select'?'':'secondary'}" id="hv-sub-select" style="flex:1">Đăng nhập</button>
+          <button class="${sub==='register'?'':'secondary'}" id="hv-sub-register" style="flex:1">➕ Đăng ký hồ sơ mới</button>
+        </div>`;
+      if (sub === 'register'){
+        body.innerHTML = switchRow + `
+          <p class="muted" style="margin-top:-6px">Dùng cho học viên CHƯA có hồ sơ trong hệ thống. Sau khi đăng ký, hệ thống cấp cho anh/chị một <b>Mã hồ sơ</b> — hãy ghi nhớ để đăng nhập lại sau này.</p>
+          <div class="field"><label>Họ và tên *</label><input id="hv-reg-hoTen" /></div>
+          <div class="row-flex">
+            <div class="field"><label>Ngày sinh *</label><input id="hv-reg-ngaySinh" type="date" /></div>
+            <div class="field"><label>Số CCCD *</label><input id="hv-reg-cccd" inputmode="numeric" placeholder="Chỉ nhập số" /></div>
+          </div>
+          <div class="row-flex">
+            <div class="field"><label>Ngày cấp CCCD</label><input id="hv-reg-ngayCapCccd" type="date" /></div>
+            <div class="field"><label>Nơi cấp CCCD</label><input id="hv-reg-noiCapCccd" placeholder="VD: Cục Cảnh sát QLHC về TTXH" /></div>
+          </div>
+          <div class="field"><label>Số điện thoại</label><input id="hv-reg-soDt" /></div>
+          <div class="field"><label>Đặt mã xác nhận (như mật khẩu) *</label><input id="hv-reg-pin" type="password" autocomplete="new-password" data-lpignore="true" data-1p-ignore /></div>
+          <div class="field"><label>Nhập lại mã xác nhận *</label><input id="hv-reg-pin2" type="password" autocomplete="new-password" data-lpignore="true" data-1p-ignore /></div>
+          <button id="do-hv-register" style="width:100%">➕ Đăng ký & bắt đầu khai báo hồ sơ</button>
+        `;
+        document.getElementById('hv-sub-select').onclick = ()=>{ state._traineeLoginSub='select'; renderLoginBody(); };
+        bindNameUppercase(document.getElementById('hv-reg-hoTen'));
+        bindDigitsOnly(document.getElementById('hv-reg-cccd'));
+        document.getElementById('do-hv-register').onclick = async ()=>{
+          const hoTen = toVNUpperName(document.getElementById('hv-reg-hoTen').value.trim());
+          const ngaySinh = document.getElementById('hv-reg-ngaySinh').value;
+          const cccd = digitsOnlyStr(document.getElementById('hv-reg-cccd').value);
+          const pin = document.getElementById('hv-reg-pin').value;
+          const pin2 = document.getElementById('hv-reg-pin2').value;
+          if (!hoTen){ alert('Vui lòng nhập họ và tên.'); return; }
+          if (!ngaySinh){ alert('Vui lòng nhập ngày sinh.'); return; }
+          if (!cccd){ alert('Vui lòng nhập số CCCD.'); return; }
+          if (!pin || pin.length < 4){ alert('Mã xác nhận cần tối thiểu 4 ký tự.'); return; }
+          if (pin !== pin2){ alert('Hai lần nhập mã xác nhận không khớp.'); return; }
+          const regBtn = document.getElementById('do-hv-register');
+          regBtn.disabled = true; regBtn.textContent = 'Đang đăng ký…';
+          try {
+            const maHoSo = genMaHoSo();
+            const newTrainee = {
+              id: uid('hv'), maHoSo, hoTen,
+              ngaySinh,
+              cccd,
+              ngayCapCccd: document.getElementById('hv-reg-ngayCapCccd').value,
+              noiCapCccd: document.getElementById('hv-reg-noiCapCccd').value.trim(),
+              soDienThoai: document.getElementById('hv-reg-soDt').value.trim(),
+              pin,
+              chucDanhDangKy: CHUC_DANH[0], trinhDoDaoTao: TRINH_DO[0],
+              donViCuTri:'', loaiHinhThucHanh: LOAI_HINH_THUC_HANH[0], mucDichThucHanh:'',
+              tuNgayDeNghi:'', soThangDangKy:'', denNgayDeNghi:'', nguoiLienHe:'', ghiChuHoSo:'',
+              trangThaiHoSo: TRANG_THAI_HO_SO_HV[0], trangThaiPheDuyet: TRANG_THAI_PHE_DUYET_HV[0],
+              ngayTiepNhan:'', soVanBanTiepNhan:'',
+              giaiDoan: [], trangThaiTongThe: 'Chưa bắt đầu',
+              hoSoDinhKem: DOC_CHECKLIST_HV.map(d=>({ key:d.key, ten:d.ten, batBuoc:d.batBuoc, trangThai:'Chưa nộp', ngayNop:'', ghiChu:'' })),
+              ngayXacNhanHoanThanh:'', soGiayXacNhan:'',
+              daNopHoSo: false,
+              createdAt: todayISO(),
+            };
+            state.trainees.push(newTrainee);
+            await saveTrainee(newTrainee);
+            state.role='trainee'; state.traineeId=newTrainee.id; state.tab='khaibao';
+            state._traineeLoginSub = null;
+            // Dùng alert (hộp thoại cố định, phải bấm OK mới qua) thay vì toast tự biến mất sau vài giây,
+            // để học viên chắc chắn đọc và ghi nhớ được Mã hồ sơ trước khi màn hình chuyển tiếp.
+            alert('Đăng ký thành công!\n\nMã hồ sơ của anh/chị là: ' + maHoSo + '\n\nVui lòng ghi nhớ mã này (kèm mã xác nhận vừa đặt) để đăng nhập lại sau này.');
+            render();
+          } catch(err){
+            regBtn.disabled = false; regBtn.textContent = '➕ Đăng ký & bắt đầu khai báo hồ sơ';
+            alert('Đăng ký chưa thành công, vui lòng thử lại. Lỗi: ' + (err && err.message ? err.message : err));
+          }
+        };
+        return;
+      }
+      // sub === 'select': đăng nhập (theo tên, dành cho hồ sơ đã được tiếp nhận) hoặc theo Mã hồ sơ
       const traineeOptions = (state.trainees||[]).filter(t=>t.trangThaiPheDuyet==='Đã đồng ý tiếp nhận').slice().sort((a,b)=>(a.hoTen||'').localeCompare(b.hoTen||'')).map(t=>({
         id: t.id, label: `${t.hoTen} — ${t.donViCuTri||'Chưa rõ đơn vị cử đi'} (${t.chucDanhDangKy||''})`
       }));
-      body.innerHTML = `
-        <div class="field"><label>Họ và tên học viên</label><div id="hv-login-ssel"></div></div>
+      body.innerHTML = switchRow + `
+        <div class="field"><label>Họ và tên học viên <span class="muted" style="font-weight:normal">(đã được Phòng CĐT tiếp nhận)</span></label><div id="hv-login-ssel"></div></div>
         <div class="field"><label>Mã xác nhận</label><input id="hv-login-pin" type="password" autocomplete="new-password" data-lpignore="true" data-1p-ignore placeholder="Mặc định: 4 số cuối CCCD" /></div>
         <button id="do-hv-login" style="width:100%">Xem tiến độ thực hành</button>
-        <p class="muted" style="margin-top:10px">Nếu chưa được Phòng Chỉ đạo tuyến tiếp nhận hồ sơ, anh/chị chưa thể đăng nhập. Liên hệ Phòng Chỉ đạo tuyến để được hỗ trợ.</p>
+        <p class="muted" style="text-align:center;margin:14px 0">— hoặc —</p>
+        <div class="field"><label>Mã hồ sơ <span class="muted" style="font-weight:normal">(dùng khi hồ sơ đang chờ duyệt/chờ điều chỉnh)</span></label><input id="hv-login-mahoso" placeholder="VD: HS20260045" /></div>
+        <div class="field"><label>Mã xác nhận</label><input id="hv-login-mahoso-pin" type="password" autocomplete="new-password" data-lpignore="true" data-1p-ignore /></div>
+        <button class="secondary" id="do-hv-code-login" style="width:100%">Đăng nhập bằng Mã hồ sơ</button>
+        <p class="muted" style="margin-top:10px">Nếu chưa được Phòng Chỉ đạo tuyến tiếp nhận hồ sơ, anh/chị chưa thể đăng nhập bằng tên. Hãy dùng Mã hồ sơ đã được cấp khi đăng ký.</p>
       `;
+      document.getElementById('hv-sub-register').onclick = ()=>{ state._traineeLoginSub='register'; renderLoginBody(); };
       let selectedTraineeId = '';
       createSearchableSelect(document.getElementById('hv-login-ssel'), traineeOptions, {
         placeholder: 'Gõ tên để tìm...',
         onSelect: (id)=>{ selectedTraineeId = id; }
       });
       document.getElementById('do-hv-login').onclick = ()=>{
-        if (!selectedTraineeId){ showToast('Vui lòng chọn tên của anh/chị trong danh sách.'); return; }
+        if (!selectedTraineeId){ alert('Vui lòng chọn tên của anh/chị trong danh sách.'); return; }
         const t = state.trainees.find(x=>x.id===selectedTraineeId);
         const pin = document.getElementById('hv-login-pin').value.trim();
-        if (pin !== effectiveTraineePin(t)){ showToast('Mã xác nhận không đúng.'); return; }
+        if (pin !== effectiveTraineePin(t)){ alert('Mã xác nhận không đúng.'); return; }
+        state.role='trainee'; state.traineeId=t.id; render();
+      };
+      document.getElementById('do-hv-code-login').onclick = ()=>{
+        const ma = document.getElementById('hv-login-mahoso').value.trim().toUpperCase();
+        const pin = document.getElementById('hv-login-mahoso-pin').value;
+        if (!ma){ alert('Vui lòng nhập Mã hồ sơ.'); return; }
+        const t = state.trainees.find(x=>(x.maHoSo||'').toUpperCase()===ma);
+        if (!t){ alert('Không tìm thấy hồ sơ với Mã hồ sơ này.'); return; }
+        if (pin !== effectiveTraineePin(t)){ alert('Mã xác nhận không đúng.'); return; }
         state.role='trainee'; state.traineeId=t.id; render();
       };
       return;
@@ -728,10 +948,10 @@
         onSelect: (id)=>{ selectedEmpId = id; }
       });
       document.getElementById('do-emp-login').onclick = ()=>{
-        if (!selectedEmpId){ showToast('Vui lòng chọn tên của anh/chị trong danh sách.'); return; }
+        if (!selectedEmpId){ alert('Vui lòng chọn tên của anh/chị trong danh sách.'); return; }
         const emp = state.employees.find(e=>e.id===selectedEmpId);
         const pin = document.getElementById('emp-pin').value.trim();
-        if (pin !== effectiveEmpPin(emp)){ showToast('Mã PIN không đúng.'); return; }
+        if (pin !== effectiveEmpPin(emp)){ alert('Mã PIN không đúng.'); return; }
         state.role='employee'; state.employeeId=emp.id; state.tab='hoso'; render();
       };
     } else if (state._loginMode === 'admin'){
@@ -749,10 +969,10 @@
         onSelect: (id)=>{ selectedAdminUserId = id; }
       });
       document.getElementById('do-admin-login').onclick = async ()=>{
-        if (!selectedAdminUserId){ showToast('Vui lòng chọn tên của anh/chị trong danh sách.'); return; }
+        if (!selectedAdminUserId){ alert('Vui lòng chọn tên của anh/chị trong danh sách.'); return; }
         const au = activeUsers.find(u=>u.id===selectedAdminUserId);
         const pin = document.getElementById('admin-pin').value.trim();
-        if (!au || pin !== (au.pin||'0000')){ showToast('Mã PIN không đúng.'); return; }
+        if (!au || pin !== (au.pin||'0000')){ alert('Mã PIN không đúng.'); return; }
         state.role = 'admin'; state.adminUserId = au.id; state.adminUserName = au.hoTen; state.adminRole = au.vaiTro;
         state.tab = (ADMIN_ROLES[au.vaiTro]&&ADMIN_ROLES[au.vaiTro].tabs!=='all') ? ADMIN_ROLES[au.vaiTro].tabs[0] : 'tongquan';
         render();
@@ -793,7 +1013,7 @@
         if (selectedUnitId === '__new__'){
           const name = document.getElementById('new-unit-name').value.trim();
           const pin = document.getElementById('new-unit-pin').value.trim();
-          if (!name || !pin){ showToast('Vui lòng nhập đầy đủ tên đơn vị và mã PIN.'); return; }
+          if (!name || !pin){ alert('Vui lòng nhập đầy đủ tên đơn vị và mã PIN.'); return; }
           const id = uid('unit');
           state.config.units.push({ id, name, pin });
           await saveConfig();
@@ -802,9 +1022,9 @@
           const u = state.config.units.find(x=>x.id===selectedUnitId);
           const pin = document.getElementById('unit-pin').value.trim();
           if (!u){ return; }
-          if (pin !== u.pin){ showToast('Mã PIN không đúng.'); return; }
+          if (pin !== u.pin){ alert('Mã PIN không đúng.'); return; }
           state.role='unit'; state.unitId=u.id; state.unitName=u.name; state.tab='nhanvien'; render();
-        } else { showToast('Vui lòng chọn đơn vị.'); }
+        } else { alert('Vui lòng chọn đơn vị.'); }
       };
     }
   }
@@ -855,6 +1075,7 @@
   function renderUnitApp(){
     const tabs = [
       { key:'nhanvien', label:'👥 Nhân viên của khoa' },
+      { key:'phancong', label:'📋 Đề nghị phân công hướng dẫn' },
       { key:'ghinhan', label:'📝 Ghi nhận CNKT' },
       { key:'doipin', label:'🔑 Đổi mật khẩu' },
     ];
@@ -862,8 +1083,132 @@
     bindTopbar(tabs, renderUnitApp);
     const content = document.getElementById('tab-content');
     if (state.tab === 'nhanvien') renderUnitEmployees(content);
+    if (state.tab === 'phancong') renderUnitPhanCong(content);
     if (state.tab === 'ghinhan') renderUnitRecord(content);
     if (state.tab === 'doipin') renderUnitChangePin(content);
+  }
+
+  function renderUnitPhanCong(content){
+    const pendingItems = [];
+    (state.trainees||[]).forEach(t=>{
+      (t.deNghiPhanCongList||[]).forEach(r=>{
+        if (r.khoaId === state.unitId) pendingItems.push({ t, r });
+      });
+    });
+    const cho = pendingItems.filter(x=>x.r.trangThai!=='Đã phân công');
+    const xong = pendingItems.filter(x=>x.r.trangThai==='Đã phân công');
+    const staffOptions = state.employees.filter(e=> e.donViId===state.unitId && e.dieuKienHuongDan && e.trangThaiNhanVien!=='Chờ duyệt');
+    content.innerHTML = `
+      <div class="card">
+        <h3>📋 Đề nghị phân công hướng dẫn từ Phòng Chỉ đạo tuyến</h3>
+        <p class="muted" style="margin-top:-6px">Khoa/phòng tự chọn nhân viên đủ điều kiện hướng dẫn của khoa mình cho từng học viên, ký xác nhận — hệ thống tự đưa vào phụ lục theo dõi, không cần Phòng CĐT nhập lại.</p>
+        ${!cho.length ? '<p class="muted">Hiện không có đề nghị nào đang chờ khoa phân công.</p>' : ''}
+        ${cho.map(({t,r})=>`
+          <div class="card" style="background:var(--amber-bg);border-color:var(--amber);margin-bottom:12px" data-req-card="${r.id}">
+            <b>${t.hoTen}</b> — ${t.chucDanhDangKy||''} <span class="muted">(${t.donViCuTri||'Chưa rõ đơn vị cử đi'})</span><br>
+            <span class="muted">Thời gian dự kiến: ${fmtDateRange(r.tuNgay, r.denNgay)} (${r.soThang} tháng)</span>
+            <div class="row-flex" style="margin-top:10px">
+              <div class="field"><label>Chọn người hướng dẫn (nhân viên đủ điều kiện của khoa)</label>
+                <select data-req-hd="${r.id}">
+                  <option value="">— Chọn người hướng dẫn —</option>
+                  ${staffOptions.map(e=>`<option value="${e.id}" ${r.nguoiHuongDanId===e.id?'selected':''}>${e.hoTen}</option>`).join('')}
+                </select>
+                ${!staffOptions.length ? '<p class="muted" style="color:var(--red)">Khoa chưa có nhân viên nào được đánh dấu "Đủ điều kiện hướng dẫn". Liên hệ Phòng CĐT để cập nhật.</p>' : ''}
+              </div>
+              <div class="field"><label>Người ký (Trưởng khoa/người được ủy quyền) *</label><input type="text" data-req-nguoiky="${r.id}" value="${r.nguoiKy||''}" placeholder="Họ và tên người ký xác nhận" /></div>
+            </div>
+            <div class="row-flex" style="margin-top:10px;align-items:center">
+              <button type="button" class="secondary" data-req-sign="${r.id}">✍️ Ký trên màn hình</button>
+              <button type="button" class="secondary" data-req-print="${r.id}">🖨️ In phiếu để ký giấy</button>
+              <button type="button" class="secondary" data-req-attach="${r.id}">📎 Đính kèm bản đã ký (scan)</button>
+              ${r.chuKyImage ? `<img src="${r.chuKyImage}" style="height:44px;border:1px solid var(--line);border-radius:4px;background:#fff" title="Chữ ký đã vẽ" />` : ''}
+              ${(r.fileDataUrl) ? `<span class="pill green">📎 Đã đính kèm bản scan</span>` : ''}
+            </div>
+            <button data-req-confirm="${r.id}" style="margin-top:10px">✅ Xác nhận phân công</button>
+          </div>
+        `).join('')}
+        ${xong.length ? `<h3 style="font-size:14px;margin-top:20px;border-top:1px solid var(--line);padding-top:12px">Đã phân công</h3>
+          <table><thead><tr><th>Học viên</th><th>Thời gian</th><th>Người hướng dẫn</th><th>Người ký</th><th>Ngày ký</th></tr></thead>
+          <tbody>${xong.map(({t,r})=>`<tr><td>${t.hoTen}</td><td>${fmtDateRange(r.tuNgay,r.denNgay)}</td><td>${r.nguoiHuongDan}</td><td>${r.nguoiKy}</td><td>${fmtDate(r.ngayKy)}</td></tr>`).join('')}</tbody></table>` : ''}
+      </div>
+    `;
+    content.querySelectorAll('[data-req-sign]').forEach(btn=>{
+      btn.onclick = ()=>{
+        const reqId = btn.getAttribute('data-req-sign');
+        const found = pendingItems.find(x=>x.r.id===reqId);
+        if (!found) return;
+        openSignaturePadModal('Ký xác nhận phân công — ' + found.t.hoTen, async (dataUrl)=>{
+          found.r.chuKyImage = dataUrl;
+          await saveTrainee(found.t);
+          showToast('Đã lưu chữ ký.');
+          renderUnitPhanCong(content);
+        });
+      };
+    });
+    content.querySelectorAll('[data-req-print]').forEach(btn=>{
+      btn.onclick = ()=>{
+        const reqId = btn.getAttribute('data-req-print');
+        const found = pendingItems.find(x=>x.r.id===reqId);
+        if (!found) return;
+        const hdSelect = content.querySelector('[data-req-hd="'+reqId+'"]');
+        const nguoiKyInput = content.querySelector('[data-req-nguoiky="'+reqId+'"]');
+        const hdId = hdSelect ? hdSelect.value : '';
+        const emp = hdId ? state.employees.find(e=>e.id===hdId) : null;
+        exportPhieuPhanCongIn(found.t, found.r, emp ? emp.hoTen : '', nguoiKyInput ? nguoiKyInput.value.trim() : '');
+      };
+    });
+    content.querySelectorAll('[data-req-attach]').forEach(btn=>{
+      btn.onclick = ()=>{
+        const reqId = btn.getAttribute('data-req-attach');
+        const found = pendingItems.find(x=>x.r.id===reqId);
+        if (!found) return;
+        const pseudoDoc = { ten: 'Phiếu phân công đã ký — ' + found.t.hoTen, files: found.r.files || (found.r.files = []), fileDataUrl: found.r.fileDataUrl, fileType: found.r.fileType, fileName: found.r.fileName };
+        openDocAttachModal(found.t, pseudoDoc, async ()=>{
+          found.r.fileDataUrl = pseudoDoc.fileDataUrl; found.r.fileType = pseudoDoc.fileType; found.r.fileName = pseudoDoc.fileName; found.r.files = pseudoDoc.files;
+          await saveTrainee(found.t);
+          renderUnitPhanCong(content);
+        });
+      };
+    });
+    content.querySelectorAll('[data-req-confirm]').forEach(btn=>{
+      btn.onclick = async ()=>{
+        const reqId = btn.getAttribute('data-req-confirm');
+        const found = pendingItems.find(x=>x.r.id===reqId);
+        if (!found) return;
+        const { t, r } = found;
+        const hdSelect = content.querySelector('[data-req-hd="'+reqId+'"]');
+        const nguoiKyInput = content.querySelector('[data-req-nguoiky="'+reqId+'"]');
+        const hdId = hdSelect ? hdSelect.value : '';
+        const nguoiKy = nguoiKyInput ? nguoiKyInput.value.trim() : '';
+        if (!hdId){ alert('Vui lòng chọn người hướng dẫn.'); return; }
+        if (!nguoiKy){ alert('Vui lòng nhập tên người ký xác nhận.'); return; }
+        if (!r.chuKyImage && !r.fileDataUrl){ alert('Vui lòng ký trên màn hình HOẶC in phiếu ký giấy rồi đính kèm bản scan, trước khi xác nhận.'); return; }
+        const emp = state.employees.find(e=>e.id===hdId);
+        const cnt = countMenteesAtRange(hdId, r.tuNgay, r.denNgay);
+        if (cnt >= 5){ alert('Người hướng dẫn này đã đủ 5 học viên trong khoảng thời gian này. Vui lòng chọn người khác.'); return; }
+        r.nguoiHuongDanId = hdId;
+        r.nguoiHuongDan = emp ? emp.hoTen : '';
+        r.nguoiKy = nguoiKy;
+        r.ngayKy = todayISO();
+        r.trangThai = 'Đã phân công';
+        t.giaiDoan = t.giaiDoan || [];
+        t.giaiDoan.push({
+          id: uid('gd'),
+          khoaId: r.khoaId, khoa: r.khoaTen,
+          nguoiHuongDanId: hdId, nguoiHuongDan: r.nguoiHuongDan,
+          tuNgay: r.tuNgay, denNgay: r.denNgay,
+          trangThai: 'Chưa bắt đầu',
+          noiDung: '',
+          ketQua: 'Chưa đánh giá',
+          nhanXet: '',
+          minhChungFile: '', minhChungFileType: '', minhChungFileName: '', minhChungLink: '',
+        });
+        recomputeTraineeOverallStatus(t);
+        await saveTrainee(t);
+        showToast('Đã phân công người hướng dẫn cho học viên "'+t.hoTen+'".');
+        renderUnitPhanCong(content);
+      };
+    });
   }
 
   function renderUnitChangePin(content){
@@ -1868,19 +2213,195 @@
   }
 
   // ============ TRAINEE (Học viên thực hành) APP ============
+  function traineeScheduleKey(t){ return (t.tuNgayDeNghi||'')+'|'+(t.denNgayDeNghi||''); }
+  function traineeScheduleReady(t){
+    return !!(t.tuNgayDeNghi && t.denNgayDeNghi) && traineeDocsSummary(t).missing === 0;
+  }
   function renderTraineeApp(){
     const t = state.trainees.find(x=>x.id===state.traineeId);
     if (!t){ logout(); return; }
     const tabs = [
+      { key:'khaibao', label:'📝 Khai báo hồ sơ' },
       { key:'thecard', label:'🪪 Thẻ theo dõi thực hành' },
       { key:'doima', label:'🔑 Đổi mã xác nhận' },
     ];
-    if (!state.tab || (state.tab!=='thecard' && state.tab!=='doima')) state.tab = 'thecard';
-    root.innerHTML = topbar('Học viên: ' + t.hoTen, tabs) + toastHtml();
+    const validTabs = tabs.map(x=>x.key);
+    if (!state.tab || !validTabs.includes(state.tab)){
+      const canReviewLocked = t.daNopHoSo && t.trangThaiPheDuyet !== 'Yêu cầu điều chỉnh';
+      state.tab = canReviewLocked ? 'thecard' : 'khaibao';
+    }
+    root.innerHTML = topbar('Học viên: ' + (t.hoTen||t.maHoSo||''), tabs) + toastHtml();
     bindTopbar(tabs, renderTraineeApp);
+    const scheduleReady = traineeScheduleReady(t);
+    const scheduleKey = traineeScheduleKey(t);
+    const scheduleIsNew = scheduleReady && t.scheduleNotifySeen !== scheduleKey;
+    if (scheduleIsNew){
+      const content0 = document.getElementById('tab-content');
+      content0.insertAdjacentHTML('beforebegin', `
+        <div class="card" id="tb-schedule-banner" style="background:#eaf2fb;border-color:var(--navy);margin:0 0 14px 0">
+          <b>🔔 Thông báo thời gian thực hành</b><br>
+          Phòng Chỉ đạo tuyến đã xếp lịch thực hành cho anh/chị: <b>${fmtDateRange(t.tuNgayDeNghi,t.denNgayDeNghi)}</b>${t.soThangDangKy?' ('+t.soThangDangKy+' tháng)':''}. Vui lòng chủ động theo dõi và có mặt đúng thời gian.
+          <div class="row-flex" style="justify-content:flex-end;margin-top:8px"><button id="tb-schedule-seen">✅ Đã xem, xác nhận</button></div>
+        </div>
+      `);
+      document.getElementById('tb-schedule-seen').onclick = async ()=>{
+        t.scheduleNotifySeen = scheduleKey;
+        await saveTrainee(t);
+        renderTraineeApp();
+      };
+    }
     const content = document.getElementById('tab-content');
+    if (state.tab === 'khaibao') renderTraineeKhaiBao(content, t);
     if (state.tab === 'thecard') renderTraineeCard(content, t);
     if (state.tab === 'doima') renderTraineeChangePin(content, t);
+  }
+
+  function renderTraineeKhaiBao(content, t){
+    const approved = t.trangThaiPheDuyet === 'Đã đồng ý tiếp nhận';
+    const locked = approved || (!!t.daNopHoSo && t.trangThaiPheDuyet !== 'Yêu cầu điều chỉnh');
+    const docs = ensureTraineeDocs(t);
+    const donDeNghi = docs.find(d=>d.key==='donDeNghi');
+    content.innerHTML = `
+      <div class="card">
+        <h3>📝 Khai báo hồ sơ thực hành</h3>
+        <p class="muted" style="margin-top:-6px">Mã hồ sơ của anh/chị: <b>${t.maHoSo||'—'}</b> — vui lòng ghi nhớ mã này để đăng nhập lại khi cần.</p>
+        ${approved ? `<div class="card" style="background:#f2f9f4;border-color:var(--green);margin-bottom:14px"><b style="color:var(--green)">✅ Hồ sơ đã được Phòng Chỉ đạo tuyến duyệt tiếp nhận.</b> Từ nay mọi chỉnh sửa/đính kèm chỉ do Phòng Chỉ đạo tuyến thực hiện — anh/chị chỉ có thể xem lại thông tin bên dưới.</div>`
+          : t.phieuTiepNhan ? (t.phieuTiepNhan.ketQua==='Đầy đủ'
+              ? `<div class="card" style="background:#f2f9f4;border-color:var(--green);margin-bottom:14px"><b style="color:var(--green)">✅ Phiếu tiếp nhận ngày ${fmtDate(t.phieuTiepNhan.ngayLap)}: hồ sơ ĐẦY ĐỦ.</b> Phòng Chỉ đạo tuyến sẽ tiếp tục xem xét phê duyệt.</div>`
+              : `<div class="card" style="background:var(--amber-bg);border-color:var(--amber);margin-bottom:14px"><b>⚠ Phiếu tiếp nhận ngày ${fmtDate(t.phieuTiepNhan.ngayLap)}: hồ sơ còn THIẾU.</b><br>Cần bổ sung: ${(t.phieuTiepNhan.danhSachThieu||[]).join('; ')||'(xem chi tiết bảng giấy tờ bên dưới)'}.</div>`)
+          : ''}
+        ${locked && !approved ? `<div class="card" style="background:var(--amber-bg);border-color:var(--amber);margin-bottom:14px"><b>Hồ sơ đã nộp, đang chờ Phòng Chỉ đạo tuyến đối chiếu.</b> Nếu cần chỉnh sửa, vui lòng liên hệ Phòng Chỉ đạo tuyến.</div>` : ''}
+        ${t.trangThaiPheDuyet==='Yêu cầu điều chỉnh' ? `<div class="card" style="background:#fdeceb;border-color:var(--red);margin-bottom:14px"><b>⚠ Phòng Chỉ đạo tuyến yêu cầu điều chỉnh hồ sơ.</b>${t.ghiChuHoSo ? '<br>Ghi chú: '+t.ghiChuHoSo : ''} Vui lòng cập nhật lại thông tin/hồ sơ bên dưới rồi nộp lại.</div>` : ''}
+        <div class="row-flex">
+          <div class="field"><label>Họ và tên *</label><input id="kb-hoTen" value="${t.hoTen||''}" ${locked?'disabled':''} /></div>
+          <div class="field"><label>Ngày sinh *</label><input id="kb-ngaySinh" type="date" value="${t.ngaySinh||''}" ${locked?'disabled':''} /></div>
+          <div class="field"><label>Số CCCD *</label><input id="kb-cccd" value="${t.cccd||''}" inputmode="numeric" placeholder="Chỉ nhập số" ${locked?'disabled':''} /></div>
+        </div>
+        <div class="row-flex">
+          <div class="field"><label>Ngày cấp CCCD</label><input id="kb-ngayCapCccd" type="date" value="${t.ngayCapCccd||''}" ${locked?'disabled':''} /></div>
+          <div class="field"><label>Nơi cấp CCCD</label><input id="kb-noiCapCccd" value="${t.noiCapCccd||''}" placeholder="VD: Cục Cảnh sát QLHC về TTXH" ${locked?'disabled':''} /></div>
+        </div>
+        <div class="row-flex">
+          <div class="field"><label>Chức danh đăng ký thực hành</label>
+            <select id="kb-chucDanh" ${locked?'disabled':''}>${CHUC_DANH.map(c=>`<option value="${c}" ${c===t.chucDanhDangKy?'selected':''}>${c}</option>`).join('')}</select>
+          </div>
+          <div class="field"><label>Trình độ đào tạo</label>
+            <select id="kb-trinhDo" ${locked?'disabled':''}>${TRINH_DO.map(c=>`<option value="${c}" ${c===t.trinhDoDaoTao?'selected':''}>${c}</option>`).join('')}</select>
+          </div>
+          <div class="field"><label>Loại hình thực hành</label>
+            <select id="kb-loaiHinh" ${locked?'disabled':''}>${LOAI_HINH_THUC_HANH.map(c=>`<option value="${c}" ${c===t.loaiHinhThucHanh?'selected':''}>${c}</option>`).join('')}</select>
+          </div>
+        </div>
+        <div class="row-flex">
+          <div class="field" style="flex:2"><label>Đơn vị công tác / trường đào tạo cử đi</label><input id="kb-donVi" value="${t.donViCuTri||''}" ${locked?'disabled':''} /></div>
+          <div class="field" style="flex:2"><label>Mục đích thực hành</label><input id="kb-mucDich" value="${t.mucDichThucHanh||''}" ${locked?'disabled':''} /></div>
+        </div>
+        <div class="row-flex">
+          <div class="field"><label>Số tháng đăng ký thực hành mong muốn *</label><input id="kb-soThang" type="number" min="0" step="0.5" value="${t.soThangDangKy||''}" placeholder="VD: 12" ${locked?'disabled':''} /></div>
+        </div>
+        <p class="muted" style="margin-top:-4px;font-style:italic">Ngày bắt đầu/kết thúc cụ thể do Phòng Chỉ đạo tuyến quyết định khi tổ chức lớp thực hành${t.tuNgayDeNghi||t.denNgayDeNghi ? ' — hiện đã được xếp: <b>'+fmtDateRange(t.tuNgayDeNghi,t.denNgayDeNghi)+'</b>' : ', sẽ thông báo sau khi hồ sơ được tiếp nhận'}.</p>
+        <div class="row-flex">
+          <div class="field"><label>Người liên hệ</label><input id="kb-nguoiLienHe" value="${t.nguoiLienHe||''}" ${locked?'disabled':''} /></div>
+          <div class="field"><label>Số điện thoại</label><input id="kb-soDt" value="${t.soDienThoai||''}" ${locked?'disabled':''} /></div>
+        </div>
+        ${!locked ? `<div class="row-flex" style="justify-content:flex-end;margin-top:8px"><button class="secondary" id="kb-save-draft">💾 Lưu tạm</button></div>` : ''}
+
+        <h3 style="font-size:15px;margin-top:20px;border-top:1px solid var(--line);padding-top:14px">📎 Hồ sơ đính kèm</h3>
+        <p class="muted" style="margin-top:-6px">Đính kèm bản chụp/scan có chữ ký cho từng giấy tờ bên dưới. Vào "📚 Thư viện mẫu văn bản" ở cuối trang để tải các mẫu cần điền tay (Đơn đề nghị, Sơ yếu lý lịch, Bản cam kết...). <b>Lưu ý:</b> vẫn cần nộp bản giấy gốc cho Phòng Chỉ đạo tuyến để lưu hồ sơ theo quy định.</p>
+        <div class="scroll-table-wrap">
+        <table>
+          <thead><tr><th>Giấy tờ</th><th>Bắt buộc</th><th>Trạng thái</th><th>Đính kèm</th></tr></thead>
+          <tbody>${docs.map(d=>`
+            <tr>
+              <td>${d.ten}</td>
+              <td style="text-align:center">${d.batBuoc ? '<span class="pill amber">Bắt buộc</span>' : '<span class="pill gray">Nếu có</span>'}</td>
+              <td>${d.trangThai==='Đã nộp' ? '<span class="pill green">Đã nộp</span>' : d.trangThai==='Yêu cầu bổ sung' ? '<span class="pill red">Yêu cầu bổ sung</span>' : d.trangThai==='Không áp dụng' ? '<span class="pill gray">Không áp dụng</span>' : '<span class="pill amber">Chưa nộp</span>'}</td>
+              <td style="text-align:center">
+                <button type="button" class="ghost small-btn" data-kb-attach="${d.key}">${approved ? '👁 Xem' : (docHasFiles(d) ? '📎 Đã có ('+ensureDocFiles(d).length+') ✅'+(docHasBlurryFile(d)?' ⚠':'') : '📎 Đính kèm')}</button>
+                ${docHasFiles(d) ? `<button type="button" class="ghost small-btn" data-kb-zoom2="${d.key}" title="Xem phóng to">🔍 Phóng to</button>` : ''}
+              </td>
+            </tr>
+          `).join('')}</tbody>
+        </table>
+        </div>
+
+        <div class="row-flex" style="margin-top:20px;border-top:1px solid var(--line);padding-top:14px">
+          <button class="secondary" id="kb-check-btn">🔍 Kiểm tra hồ sơ tự động</button>
+        </div>
+        <div id="kb-check-result"></div>
+
+        ${!locked ? `<div class="row-flex" style="justify-content:flex-end;margin-top:14px">
+          <button id="kb-submit-btn">✅ Nộp hồ sơ cho Phòng Chỉ đạo tuyến</button>
+        </div>` : ''}
+      </div>
+      ${renderHvMauLibraryHtml()}
+    `;
+    bindHvMauLibrary(content);
+
+    function readForm(){
+      return {
+        hoTen: toVNUpperName(content.querySelector('#kb-hoTen').value.trim()),
+        ngaySinh: content.querySelector('#kb-ngaySinh').value,
+        cccd: digitsOnlyStr(content.querySelector('#kb-cccd').value),
+        ngayCapCccd: content.querySelector('#kb-ngayCapCccd').value,
+        noiCapCccd: content.querySelector('#kb-noiCapCccd').value.trim(),
+        chucDanhDangKy: content.querySelector('#kb-chucDanh').value,
+        trinhDoDaoTao: content.querySelector('#kb-trinhDo').value,
+        loaiHinhThucHanh: content.querySelector('#kb-loaiHinh').value,
+        donViCuTri: content.querySelector('#kb-donVi').value.trim(),
+        mucDichThucHanh: content.querySelector('#kb-mucDich').value.trim(),
+        soThangDangKy: content.querySelector('#kb-soThang').value ? parseFloat(content.querySelector('#kb-soThang').value) : '',
+        nguoiLienHe: content.querySelector('#kb-nguoiLienHe').value.trim(),
+        soDienThoai: content.querySelector('#kb-soDt').value.trim(),
+      };
+    }
+    if (!locked){
+      bindNameUppercase(content.querySelector('#kb-hoTen'));
+      bindDigitsOnly(content.querySelector('#kb-cccd'));
+      content.querySelector('#kb-save-draft').onclick = async ()=>{
+        Object.assign(t, readForm());
+        await saveTrainee(t);
+        showToast('Đã lưu tạm thông tin.');
+      };
+      content.querySelector('#kb-submit-btn').onclick = async ()=>{
+        const formData = readForm();
+        if (!formData.hoTen){ showToast('Vui lòng nhập họ và tên.'); return; }
+        if (!formData.ngaySinh){ showToast('Vui lòng nhập ngày sinh.'); return; }
+        if (!formData.cccd){ showToast('Vui lòng nhập số CCCD.'); return; }
+        Object.assign(t, formData);
+        const errs = hvAutoCheckErrors(t);
+        if (errs.length){
+          if (!confirm('Trợ lý phát hiện '+errs.length+' điểm chưa ổn:\\n- '+errs.join('\\n- ')+'\\n\\nAnh/chị vẫn muốn nộp hồ sơ luôn?')) { await saveTrainee(t); return; }
+        }
+        t.daNopHoSo = true;
+        if (t.trangThaiPheDuyet === 'Yêu cầu điều chỉnh') t.trangThaiPheDuyet = 'Chờ phê duyệt';
+        t.trangThaiHoSo = errs.length ? 'Chưa đầy đủ' : 'Đã đầy đủ';
+        await saveTrainee(t);
+        showToast('Đã nộp hồ sơ cho Phòng Chỉ đạo tuyến.');
+        renderTraineeApp();
+      };
+    }
+    content.querySelectorAll('[data-kb-attach]').forEach(btn=>{
+      const doc = docs.find(d=>d.key===btn.getAttribute('data-kb-attach'));
+      if (doc) btn.onclick = ()=> openDocAttachModal(t, doc, ()=> renderTraineeKhaiBao(content, t), { readOnly: approved });
+    });
+    content.querySelectorAll('[data-kb-zoom2]').forEach(btn=>{
+      const doc = docs.find(d=>d.key===btn.getAttribute('data-kb-zoom2'));
+      if (doc) btn.onclick = ()=> quickZoomDoc(t, doc);
+    });
+    content.querySelector('#kb-check-btn').onclick = ()=>{
+      if (!locked) Object.assign(t, readForm());
+      const errs = hvAutoCheckErrors(t);
+      const box = content.querySelector('#kb-check-result');
+      if (!errs.length){
+        box.innerHTML = `<div class="card" style="background:#f2f9f4;border-color:var(--green);margin-top:12px"><b style="color:var(--green)">✅ Không phát hiện lỗi rõ ràng trong hồ sơ đã nhập.</b></div>`;
+      } else {
+        box.innerHTML = `<div class="card" style="background:var(--amber-bg);border-color:var(--amber);margin-top:12px">
+          <b>⚠ Trợ lý phát hiện ${errs.length} điểm cần kiểm tra/bổ sung:</b>
+          <ul style="margin:8px 0 0 18px">${errs.map(e=>`<li>${e}</li>`).join('')}</ul>
+        </div>`;
+      }
+    };
   }
 
   function renderTraineeCard(content, t){
@@ -1901,17 +2422,21 @@
 
         <h3 style="font-size:15px">Thông tin cá nhân & hồ sơ thực hành</h3>
         <table>
+          <tr><td style="width:220px"><b>Mã hồ sơ</b></td><td>${t.maHoSo||'—'}</td></tr>
           <tr><td style="width:220px"><b>Họ và tên</b></td><td>${t.hoTen||''}</td></tr>
           <tr><td><b>Ngày sinh</b></td><td>${fmtDate(t.ngaySinh)}</td></tr>
           <tr><td><b>Chức danh đăng ký thực hành</b></td><td>${t.chucDanhDangKy||''}</td></tr>
           <tr><td><b>Trình độ đào tạo</b></td><td>${t.trinhDoDaoTao||''}</td></tr>
           <tr><td><b>Đơn vị / trường cử đi</b></td><td>${t.donViCuTri||''}</td></tr>
           <tr><td><b>Loại hình thực hành</b></td><td>${t.loaiHinhThucHanh||''}</td></tr>
-          <tr><td><b>Thời gian đề nghị</b></td><td>${fmtDateRange(t.tuNgayDeNghi, t.denNgayDeNghi)}</td></tr>
+          <tr><td><b>Thời gian đề nghị</b></td><td>${fmtDateRange(t.tuNgayDeNghi, t.denNgayDeNghi)}${t.soThangDangKy ? ' <span class="muted">('+t.soThangDangKy+' tháng)</span>' : ''}</td></tr>
           <tr><td><b>Trạng thái hồ sơ</b></td><td>${t.trangThaiHoSo||'Chưa đầy đủ'}</td></tr>
           <tr><td><b>Trạng thái phê duyệt tiếp nhận</b></td><td>${pillPheDuyetHV(t.trangThaiPheDuyet)}</td></tr>
           <tr><td><b>Ngày tiếp nhận</b></td><td>${t.ngayTiepNhan ? fmtDate(t.ngayTiepNhan) : '—'}</td></tr>
           <tr><td><b>Số văn bản/quyết định tiếp nhận</b></td><td>${t.soVanBanTiepNhan||'—'}</td></tr>
+          <tr><td><b>Số hợp đồng thực hành</b></td><td>${t.soHopDongTH||'—'}</td></tr>
+          <tr><td><b>Ngày ký hợp đồng thực hành</b></td><td>${t.ngayKyHopDongTH ? fmtDate(t.ngayKyHopDongTH) : '—'}</td></tr>
+          <tr><td><b>Đóng phí thực hành</b></td><td>${t.daDongPhiTH ? '<span class="pill green">Đã đóng đủ'+(t.ngayDongPhiTH?(' — '+fmtDate(t.ngayDongPhiTH)):'')+'</span>' : '<span class="pill amber">Chưa đóng</span>'}</td></tr>
           <tr><td><b>Trạng thái thực hành chung</b></td><td>${pillTongTheHV(t.trangThaiTongThe)}</td></tr>
           ${t.trangThaiTongThe==='Đã xác nhận hoàn thành' ? `
           <tr><td><b>Số giấy xác nhận hoàn thành</b></td><td>${t.soGiayXacNhan||'—'}</td></tr>
@@ -1954,7 +2479,9 @@
         </div>
         ` : `<p class="muted">Phòng Chỉ đạo tuyến chưa phân khoa thực hành cho anh/chị. Vui lòng liên hệ Phòng Chỉ đạo tuyến để được sắp xếp.</p>`}
       </div>
+      ${renderHvMauLibraryHtml()}
     `;
+    bindHvMauLibrary(content);
   }
 
   function renderTraineeChangePin(content, t){
@@ -1976,7 +2503,7 @@
       if (!newPin){ showToast('Vui lòng nhập mã xác nhận mới.'); return; }
       if (newPin !== newPin2){ showToast('Hai lần nhập mã xác nhận mới không khớp.'); return; }
       t.pin = newPin;
-      await saveTrainees();
+      await saveTrainee(t);
       showToast('Đã đổi mã xác nhận thành công.');
       document.getElementById('hcp-old').value=''; document.getElementById('hcp-new').value=''; document.getElementById('hcp-new2').value='';
     };
@@ -3263,11 +3790,1095 @@
     const map = { 'Chưa đánh giá':'gray', 'Đạt':'green', 'Đạt có điều kiện':'amber', 'Chưa đạt':'red' };
     return `<span class="pill ${map[kq]||'gray'}">${kq||'Chưa đánh giá'}</span>`;
   }
-  function ensureTraineeDocs(t){
-    if (!t.hoSoDinhKem || !t.hoSoDinhKem.length){
-      t.hoSoDinhKem = DOC_CHECKLIST_HV.map(d=>({ key:d.key, ten:d.ten, batBuoc:d.batBuoc, trangThai:'Chưa nộp', ngayNop:'', ghiChu:'' }));
+  // ---- Thư viện mẫu văn bản (mẫu phôi trống, theo đúng mẫu chuẩn của Bệnh viện) ----
+  function quocHieuBlockHtml(){
+    return '<div style="text-align:center;font-weight:bold">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>' +
+      '<div style="text-align:center;font-weight:bold;text-decoration:underline">Độc lập - Tự do - Hạnh phúc</div>' +
+      '<div style="text-align:center">-------------</div>';
+  }
+  function bvKhoaHeaderTableHtml(rightBlockHtml){
+    return '<table class="kv"><tr>' +
+      '<td style="width:38%"><div class="hd-org">BỆNH VIỆN ĐA KHOA<br>TRUNG TÂM TỈNH GIA LAI<br><span class="hd-sub">KHOA: ……………………………</span></div></td>' +
+      '<td style="width:62%"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>' +
+        '<div style="text-align:center;font-weight:bold;text-decoration:underline">Độc lập - Tự do - Hạnh phúc</div>' +
+        '<div style="text-align:center">-------------</div>' + rightBlockHtml + '</td>' +
+      '</tr></table>';
+  }
+  function exportMauDonDeNghi(){
+    const body = quocHieuBlockHtml() +
+      '<p style="text-align:right;font-style:italic;margin-top:6px">……………, ngày …. tháng …. năm ……</p>' +
+      '<div class="doc-title">ĐƠN ĐỀ NGHỊ</div>' +
+      '<div class="doc-trichyeu">Thực hành tại cơ sở khám bệnh, chữa bệnh</div>' +
+      '<p>Kính gửi: Bệnh viện Đa khoa Trung tâm tỉnh Gia Lai</p>' +
+      '<p>Họ và tên: …………………………………………………………………………………</p>' +
+      '<p>Ngày, tháng, năm sinh: ……………………………………………………………………</p>' +
+      '<p>Số CCCD/CMND/Hộ chiếu: ……………………………… Ngày cấp: ……………… Nơi cấp: ………………</p>' +
+      '<p>Địa chỉ: ……………………………………………………………………………………</p>' +
+      '<p>Điện thoại: …………………………… Email (nếu có): ………………………………</p>' +
+      '<p>Văn bằng chuyên môn: ………………………………………………………………</p>' +
+      '<p>Thời gian đăng ký thực hành: ……………………………………………………</p>' +
+      '<p>Để có đủ điều kiện được cấp giấy phép hành nghề khám bệnh, chữa bệnh, tôi đề nghị Bệnh viện Đa khoa Trung tâm tỉnh Gia Lai cho phép và tạo điều kiện cho tôi được thực hành khám bệnh, chữa bệnh tại cơ sở khám bệnh, chữa bệnh.</p>' +
+      '<p>Tôi xin cam kết sẽ thực hiện đúng các quy định của pháp luật về việc thực hành khám bệnh, chữa bệnh và các quy định khác có liên quan của cơ sở khám bệnh, chữa bệnh.</p>' +
+      '<table class="sign-block"><tr><td style="width:50%">&nbsp;</td><td style="width:50%">NGƯỜI LÀM ĐƠN<br><span class="sign-note">(Ký, ghi rõ họ tên)</span><br><br><br><br></td></tr></table>';
+    exportWordCustomDoc('ĐƠN ĐỀ NGHỊ THỰC HÀNH KHÁM BỆNH, CHỮA BỆNH', body, 'mau_don_de_nghi_thuc_hanh.doc', { landscape:false });
+  }
+  function exportMauBanCamKet(){
+    const body = '<div style="text-align:center;font-weight:bold">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>' +
+      '<div style="text-align:center;font-weight:bold;text-decoration:underline">Độc lập - Tự do - Hạnh phúc</div>' +
+      '<div class="doc-title">BẢN CAM KẾT</div>' +
+      '<div class="doc-trichyeu">Về việc thỏa thuận các điều kiện về thực hành</div>' +
+      '<div style="text-align:center">-------------</div>' +
+      '<p>Kính gửi: Bệnh viện Đa khoa Trung tâm tỉnh Gia Lai,</p>' +
+      '<p>Tôi tên: …………………………………………………, sinh ngày: ……………………………</p>' +
+      '<p>Số CCCD/CMND: …………………………………… Ngày cấp: …………………………………</p>' +
+      '<p>Nơi cấp: ……………………………………………………………………………………</p>' +
+      '<p>Địa chỉ thường trú: ……………………………………………………………………………</p>' +
+      '<p>Chuyên môn, nghiệp vụ: ……………………………………………………………………</p>' +
+      '<p>Địa chỉ nơi làm việc (nếu có): ……………………………………………………………</p>' +
+      '<p>Căn cứ Thông báo về việc tiếp nhận học viên có nhu cầu thực hành chuyên môn tại Bệnh viện Đa khoa Trung tâm tỉnh Gia Lai.</p>' +
+      '<p>Tôi cam kết thực hiện đúng các điều kiện, quy định được thực hành, cụ thể:</p>' +
+      '<table class="data"><tbody>' +
+      '<tr><td style="width:88%">Chấp hành nội quy, quy chế cơ sở được thực hành</td><td style="width:12%;text-align:center">☐</td></tr>' +
+      '<tr><td>Đồng ý nộp kinh phí thực hành theo thỏa thuận với Bệnh viện</td><td style="text-align:center">☐</td></tr>' +
+      '<tr><td>Hoàn thành nhiệm vụ cam kết trong Hợp đồng thực hành</td><td style="text-align:center">☐</td></tr>' +
+      '</tbody></table>' +
+      '<table class="sign-block"><tr><td style="width:50%">&nbsp;</td><td style="width:50%">Gia Lai, ngày …. tháng …. năm ……<br>NGƯỜI CAM KẾT<br><span class="sign-note">(Ký, ghi rõ họ tên)</span><br><br><br><br></td></tr></table>' +
+      '<p style="font-size:9.5pt;font-style:italic;margin-top:20px">Ghi chú: Sau khi hoàn tất việc đóng phí thực hành, đề nghị nộp Bản cam kết này và Phiếu thu cho bộ phận tiếp nhận đơn đề nghị thực hành để nhận giấy giới thiệu về khoa, phòng được thực hành.</p>';
+    exportWordCustomDoc('BẢN CAM KẾT VỀ VIỆC THỎA THUẬN CÁC ĐIỀU KIỆN VỀ THỰC HÀNH', body, 'mau_ban_cam_ket.doc', { landscape:false });
+  }
+  function exportMauSoYeuLyLich(){
+    const body = quocHieuBlockHtml() +
+      '<div class="doc-title">SƠ YẾU LÝ LỊCH TỰ THUẬT</div>' +
+      '<p>Họ và tên: …………………………………………… Nam, nữ: ……………</p>' +
+      '<p>Ngày, tháng, năm sinh: ……………………………………………………</p>' +
+      '<p>Nơi thường trú hiện nay: ……………………………………………………</p>' +
+      '<p>Số CCCD/số CMND/số căn cước/số định danh cá nhân/số hộ chiếu: ……………………………</p>' +
+      '<p>Ngày cấp: …………………………………… Nơi cấp: ……………………………………</p>' +
+      '<p>Số điện thoại liên hệ: Nhà riêng …………………… Di động (nếu có) ……………………</p>' +
+      '<p>Khi cần báo tin cho ai? Ở đâu?: ……………………………………………………</p>' +
+      '<p>Dân tộc: …………………………………… Tôn giáo: ……………………………………</p>' +
+      '<p>Trình độ văn hóa: …………………………… Ngoại ngữ: ……………………………</p>' +
+      '<p>Trình độ chuyên môn: …………………………… Loại hình đào tạo: ……………………</p>' +
+      '<p>Chuyên ngành đào tạo: ……………………………………………………………………</p>' +
+      '<p>Nghề nghiệp: ……………………………………………………………………………</p>' +
+      '<h4 style="margin:16px 0 4px">HOÀN CẢNH GIA ĐÌNH</h4>' +
+      '<p>Họ và tên bố: …………………… Tuổi: ………… Nghề nghiệp: ……………………</p>' +
+      '<p>Họ và tên mẹ: …………………… Tuổi: ………… Nghề nghiệp: ……………………</p>' +
+      '<p>Họ và tên vợ hoặc chồng: …………………… Tuổi: …………………………………</p>' +
+      '<p>Nghề nghiệp: …………………………………… Nơi làm việc: ……………………………</p>' +
+      '<h4 style="margin:16px 0 4px">QUÁ TRÌNH ĐÀO TẠO CỦA BẢN THÂN</h4>' +
+      '<table class="data"><thead><tr><th>Từ tháng năm đến tháng năm</th><th>Chuyên ngành đào tạo</th><th>Tên cơ sở đào tạo</th><th>Văn bằng, chứng chỉ được cấp</th></tr></thead>' +
+      '<tbody>' + Array(4).fill('<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>').join('') + '</tbody></table>' +
+      '<h4 style="margin:16px 0 4px">QUÁ TRÌNH CÔNG TÁC CỦA BẢN THÂN</h4>' +
+      '<table class="data"><thead><tr><th>Từ tháng năm đến tháng năm</th><th>Làm công tác gì?</th><th>Ở đâu?</th><th>Giữ chức vụ gì?</th></tr></thead>' +
+      '<tbody>' + Array(4).fill('<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>').join('') + '</tbody></table>' +
+      '<p style="margin-top:14px">Có thuộc các trường hợp bị cấm hành nghề theo quy định tại Điều 20 của Luật Khám bệnh, chữa bệnh không? …………</p>' +
+      '<p>Nếu có, ghi rõ: ……………………………………………………………………………</p>' +
+      '<p>Tôi xin cam đoan những lời khai trên là đúng sự thực, nếu sai tôi xin chịu trách nhiệm hoàn toàn trước pháp luật.</p>' +
+      '<table class="sign-block"><tr><td style="width:50%">XÁC NHẬN CỦA THỦ TRƯỞNG<br>CƠ QUAN/ĐƠN VỊ CÔNG TÁC<br><span class="sign-note">(nếu có)</span><br><br><br><br></td><td style="width:50%">……, ngày…. tháng… năm……<br>NGƯỜI KHAI KÝ TÊN<br><br><br><br></td></tr></table>' +
+      '<p style="font-size:9.5pt;font-style:italic;margin-top:16px">Ghi chú: Trường hợp thực hiện thủ tục trên môi trường điện tử, chỉ cần kê khai Họ và tên, ngày tháng năm sinh, số định danh cá nhân/số căn cước công dân. Trường hợp thực hiện bằng hồ sơ giấy, người hành nghề cần kê khai đầy đủ các thông tin hành chính trong đơn.</p>';
+    exportWordCustomDoc('SƠ YẾU LÝ LỊCH TỰ THUẬT', body, 'mau_so_yeu_ly_lich_tu_thuat.doc', { landscape:false });
+  }
+  function exportMauPhieuTiepNhan(){
+    const checkboxHtml = '<table border="1" cellpadding="0" cellspacing="0" style="border-collapse:collapse;display:inline-table;border:1pt solid #000000"><tr><td width="18" height="18" style="border:1pt solid #000000;background:#fff;text-align:center;vertical-align:middle;font-size:12pt;font-weight:bold;padding:0">&nbsp;</td></tr></table>';
+    const body = '<table style="border-collapse:collapse"><tr>' +
+        '<td style="width:260px;vertical-align:top" valign="top" nowrap="nowrap"><div class="hd-org" style="font-size:11pt;white-space:nowrap" nowrap="nowrap">SỞ Y TẾ TỈNH GIA LAI<br>BỆNH VIỆN ĐA KHOA TRUNG TÂM</div></td>' +
+        '<td style="vertical-align:top" valign="top" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap" nowrap="nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>' +
+          '<div style="text-align:center;font-weight:bold;text-decoration:underline">Độc lập - Tự do - Hạnh phúc</div></td>' +
+      '</tr><tr>' +
+        '<td style="text-align:center" nowrap="nowrap">Số: ……………/PTNHSTH</td>' +
+        '<td nowrap="nowrap"><div class="hd-place" style="white-space:nowrap">Gia Lai, ngày …. tháng …. năm 20….</div></td>' +
+      '</tr></table>' +
+      '<div class="doc-title">PHIẾU TIẾP NHẬN</div>' +
+      '<div class="doc-trichyeu">Hồ sơ của người thực hành tại cơ sở khám bệnh, chữa bệnh</div>' +
+      '<div style="text-align:center;margin-bottom:16px">-------------</div>' +
+      '<p>Họ và tên (Người tiếp nhận): ……………………………………………………………</p>' +
+      '<p>Bộ phận công tác: …………………………………… Điện thoại: ……………………………</p>' +
+      '<p>Đã nhận hồ sơ thực hành tại cơ sở khám bệnh, chữa bệnh của học viên</p>' +
+      '<p>……………………………………………………… Số ĐT: ……………………………………</p>' +
+      '<p>Mã hồ sơ trên hệ thống điện tử (nếu có): ……………………………………</p>' +
+      '<p>Hồ sơ gồm:</p>' +
+      '<table class="kv"><tbody>' +
+      '<tr><td style="width:88%;padding:5px 0">Đơn đề nghị được thực hành</td><td style="width:12%;padding:5px 0;text-align:right">'+checkboxHtml+'</td></tr>' +
+      '<tr><td style="padding:5px 0">Bản sao hợp lệ văn bằng chuyên môn</td><td style="padding:5px 0;text-align:right">'+checkboxHtml+'</td></tr>' +
+      '<tr><td style="padding:5px 0">Sơ yếu lý lịch tự thuật</td><td style="padding:5px 0;text-align:right">'+checkboxHtml+'</td></tr>' +
+      '<tr><td style="padding:5px 0">Bản sao CCCD/CMND</td><td style="padding:5px 0;text-align:right">'+checkboxHtml+'</td></tr>' +
+      '<tr><td style="padding:5px 0">Bản cam kết</td><td style="padding:5px 0;text-align:right">'+checkboxHtml+'</td></tr>' +
+      '</tbody></table>' +
+      '<p style="margin-top:14px">Thời gian đến làm thủ tục xuống khoa thực hành: ngày …../…../20…..</p>' +
+      '<table class="sign-block"><tr><td style="width:50%">&nbsp;</td><td style="width:50%">NGƯỜI TIẾP NHẬN<br><span class="sign-note">(Ký, ghi rõ họ tên)</span><br><br><br><br></td></tr></table>';
+    exportWordCustomDoc('PHIẾU TIẾP NHẬN HỒ SƠ THỰC HÀNH', body, 'mau_phieu_tiep_nhan.doc', { landscape:false });
+  }
+  // ---- Phiếu tiếp nhận ĐÃ ĐIỀN theo đúng học viên (sinh ra khi CĐT bấm "Xác nhận & Lập phiếu tiếp nhận") ----
+  function exportPhieuPhanCongIn(t, r, tenNguoiHuongDan, tenNguoiKy){
+    const khoaTen = r.khoaTen || '';
+    const body = '<table style="border-collapse:collapse"><tr>' +
+        '<td style="width:260px;vertical-align:top" valign="top" nowrap="nowrap"><div class="hd-org" style="font-size:11pt;white-space:nowrap" nowrap="nowrap">BỆNH VIỆN ĐA KHOA<br>TRUNG TÂM TỈNH GIA LAI<br><span class="hd-sub" style="font-weight:normal">KHOA: '+khoaTen+'</span></div></td>' +
+        '<td style="vertical-align:top" valign="top" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap" nowrap="nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>' +
+          '<div style="text-align:center;font-weight:bold;text-decoration:underline">Độc lập - Tự do - Hạnh phúc</div></td>' +
+      '</tr><tr>' +
+        '<td>&nbsp;</td>' +
+        '<td><div class="hd-place" style="white-space:nowrap">Gia Lai, ' + vietnameseDateLong(todayISO()) + '</div></td>' +
+      '</tr></table>' +
+      '<div class="doc-title">PHIẾU PHÂN CÔNG NGƯỜI HƯỚNG DẪN THỰC HÀNH</div>' +
+      '<p>Kính gửi: Phòng Chỉ đạo tuyến — Bệnh viện Đa khoa Trung tâm tỉnh Gia Lai</p>' +
+      '<p>Căn cứ đề nghị phân công thực hành của Phòng Chỉ đạo tuyến, Khoa <b>'+khoaTen+'</b> phân công như sau:</p>' +
+      '<p>Học viên thực hành: <b>' + (t.hoTen||'') + '</b> &nbsp;&nbsp; Mã hồ sơ: ' + (t.maHoSo||'—') + '</p>' +
+      '<p>Chức danh đăng ký: ' + (t.chucDanhDangKy||'') + ' &nbsp;&nbsp; Đơn vị/trường cử đi: ' + (t.donViCuTri||'') + '</p>' +
+      '<p>Thời gian thực hành: Từ ngày ' + fmtDate(r.tuNgay) + ' đến ngày ' + fmtDate(r.denNgay) + ' (' + (r.soThang||'') + ' tháng)</p>' +
+      '<p>Người hướng dẫn được phân công: <b>' + (tenNguoiHuongDan || '……………………………………') + '</b></p>' +
+      '<p style="margin-top:16px">Khoa cam kết người hướng dẫn nêu trên đủ điều kiện chuyên môn theo quy định và chịu trách nhiệm hướng dẫn học viên trong suốt thời gian thực hành nêu trên.</p>' +
+      '<table class="sign-block"><tr><td style="width:50%">&nbsp;</td><td style="width:50%">TRƯỞNG KHOA<br><span class="sign-note">(Ký, ghi rõ họ tên)</span><br><br><br><br>' + (tenNguoiKy ? '<div style="font-weight:normal;font-style:italic">'+tenNguoiKy+'</div>' : '') + '</td></tr></table>';
+    exportWordCustomDoc('PHIẾU PHÂN CÔNG NGƯỜI HƯỚNG DẪN THỰC HÀNH', body, 'phieu_phan_cong_'+(t.hoTen||'').replace(/\s+/g,'_')+'.doc', { landscape:false });
+  }
+  function exportPhieuTiepNhanFilled(t){
+    const docs = ensureTraineeDocs(t);
+    const s = traineeDocsSummary(t);
+    const pn = t.phieuTiepNhan || { ngayLap: todayISO(), ketQua: s.missing===0?'Đầy đủ':'Thiếu', danhSachThieu: s.missingNames };
+    const checkboxHtml = function(state2){
+      const mark = state2==='checked' ? '✓' : (state2==='na' ? '–' : '&nbsp;');
+      return '<table border="1" cellpadding="0" cellspacing="0" style="border-collapse:collapse;display:inline-table;border:1pt solid #000000"><tr><td width="18" height="18" style="border:1pt solid #000000;background:#fff;text-align:center;vertical-align:middle;font-size:12pt;font-weight:bold;padding:0">'+mark+'</td></tr></table>';
+    };
+    const rows = '<table class="kv" style="margin-top:4px"><tbody>' + docs.map(d=>{
+      const st = (d.trangThai==='Đã nộp') ? 'checked' : (d.trangThai==='Không áp dụng' ? 'na' : 'empty');
+      return '<tr><td style="width:88%;padding:5px 0">'+d.ten+(d.batBuoc?'':' <i>(nếu có)</i>')+'</td><td style="width:12%;padding:5px 0;text-align:right">'+checkboxHtml(st)+'</td></tr>';
+    }).join('') + '</tbody></table>';
+    const body = '<table style="border-collapse:collapse"><tr>' +
+        '<td style="width:260px;vertical-align:top" valign="top" nowrap="nowrap"><div class="hd-org" style="font-size:11pt;white-space:nowrap" nowrap="nowrap">SỞ Y TẾ TỈNH GIA LAI<br>BỆNH VIỆN ĐA KHOA TRUNG TÂM</div></td>' +
+        '<td style="vertical-align:top" valign="top" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap" nowrap="nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>' +
+          '<div style="text-align:center;font-weight:bold;text-decoration:underline">Độc lập - Tự do - Hạnh phúc</div></td>' +
+      '</tr><tr>' +
+        '<td style="text-align:center" nowrap="nowrap">Số: ' + (pn.soPhieu || '……………/PTNHSTH') + '</td>' +
+        '<td nowrap="nowrap"><div class="hd-place" style="white-space:nowrap">Gia Lai, ' + vietnameseDateLong(pn.ngayLap||todayISO()) + '</div></td>' +
+      '</tr></table>' +
+      '<div class="doc-title">PHIẾU TIẾP NHẬN</div>' +
+      '<div class="doc-trichyeu">Hồ sơ của người thực hành tại cơ sở khám bệnh, chữa bệnh</div>' +
+      '<div style="text-align:center;margin-bottom:16px">-------------</div>' +
+      '<p>Họ và tên (Người tiếp nhận): ' + (state.adminUserName || '……………………………………') + '</p>' +
+      '<p>Bộ phận công tác: Phòng Chỉ đạo tuyến &nbsp;&nbsp;&nbsp;&nbsp; Điện thoại: ……………………………</p>' +
+      '<p>Đã nhận hồ sơ thực hành tại cơ sở khám bệnh, chữa bệnh của học viên</p>' +
+      '<p><b>' + (t.hoTen||'') + '</b> &nbsp;&nbsp; Số ĐT: ' + (t.soDienThoai||'……………') + '</p>' +
+      '<p>Mã hồ sơ trên hệ thống điện tử: <b>' + (t.maHoSo||'—') + '</b></p>' +
+      '<p>Kết quả đối chiếu hồ sơ: ' + (pn.ketQua==='Đầy đủ' ? '<b style="color:#1f7a4d">ĐẦY ĐỦ</b>' : '<b style="color:#a3271f">CÒN THIẾU</b>' + (pn.danhSachThieu&&pn.danhSachThieu.length ? ' — ' + pn.danhSachThieu.join('; ') : '')) + '</p>' +
+      '<p>Chi tiết hồ sơ gồm:</p>' +
+      rows +
+      '<p style="margin-top:14px">Thời gian đến làm thủ tục xuống khoa thực hành: ngày …../…../20…..</p>' +
+      '<table class="sign-block"><tr><td style="width:50%">&nbsp;</td><td style="width:50%">NGƯỜI TIẾP NHẬN<br><span class="sign-note">(Ký, ghi rõ họ tên)</span><br><br><br><br></td></tr></table>';
+    exportWordCustomDoc('PHIẾU TIẾP NHẬN HỒ SƠ THỰC HÀNH', body, 'phieu_tiep_nhan_'+(t.hoTen||'').replace(/\s+/g,'_')+'.doc', { landscape:false });
+  }
+  function exportMauBanNhanXet(){
+    const body = bvKhoaHeaderTableHtml('<div class="hd-place" style="margin-top:6px">Gia Lai, ngày …. tháng …. năm 20….</div>') +
+      '<div class="doc-title" style="margin-top:20px">BẢN NHẬN XÉT CỦA NGƯỜI HƯỚNG DẪN THỰC HÀNH</div>' +
+      '<p>Kính gửi: - Lãnh đạo: Bệnh viện Đa khoa Trung tâm tỉnh Gia Lai;</p>' +
+      '<p>&nbsp;&nbsp;&nbsp;&nbsp;- Lãnh đạo khoa (phòng): …………………………………</p>' +
+      '<p>Tôi tên: …………………………………… Ngày, tháng, năm sinh: ……………………………</p>' +
+      '<p>Văn bằng chuyên môn: ……………………………………………………………………</p>' +
+      '<p>Đơn vị công tác: ……………………………………………………………………………</p>' +
+      '<p>Qua thời gian phân công hướng dẫn thực hành:</p>' +
+      '<p>Ông(bà): …………………………………… Ngày, tháng, năm sinh: ……………………………</p>' +
+      '<p>Văn bằng chuyên môn: ……………………………………………………………………</p>' +
+      '<p>Khoa (phòng)/bộ phận đăng ký thực hành: ……………………………………………</p>' +
+      '<p>Tôi nhận xét kết quả thực hành đối với ông(bà) …………………………… với những nội dung sau, cụ thể:</p>' +
+      '<p><b>1. Thời gian thực hành:</b> Từ ngày …………………… đến ngày ……………………</p>' +
+      '<p><b>2. Năng lực chuyên môn:</b></p>' +
+      Array(4).fill('<p>……………………………………………………………………………………………</p>').join('') +
+      '<p><b>3. Đạo đức nghề nghiệp:</b></p>' +
+      Array(4).fill('<p>……………………………………………………………………………………………</p>').join('') +
+      '<p>Tôi xin chịu hoàn toàn trách nhiệm về bản nhận xét trên./.</p>' +
+      '<table class="sign-block"><tr><td style="width:33%">NGƯỜI HƯỚNG DẪN<br><span class="sign-note">(Ký, ghi rõ họ tên)</span><br><br><br><br></td><td style="width:33%">XÁC NHẬN CỦA KHOA<br><span class="sign-note">(Ký, ghi rõ họ tên)</span><br><br><br><br></td><td style="width:34%">XÁC NHẬN CỦA PHÒNG …………<br><span class="sign-note">(Ký, ghi rõ họ tên)</span><br><br><br><br></td></tr></table>';
+    exportWordCustomDoc('BẢN NHẬN XÉT CỦA NGƯỜI HƯỚNG DẪN THỰC HÀNH', body, 'mau_ban_nhan_xet_nguoi_huong_dan.doc', { landscape:false });
+  }
+  function exportBanNhanXetFilled(t, stage){
+    const emp = state.employees.find(e=>e.id===stage.nguoiHuongDanId);
+    const empNgaySinh = emp && emp.ngaySinh ? fmtDate(emp.ngaySinh) : '……………………';
+    const empTrinhDo = emp ? (emp.trinhDoCM || emp.chucDanh || '……………………') : '……………………';
+    const empDonVi = stage.khoa || '……………………';
+    const body = bvKhoaHeaderTableHtml('<div class="hd-place" style="margin-top:6px">Gia Lai, ngày …. tháng …. năm 20….</div>') +
+      '<div class="doc-title" style="margin-top:20px">BẢN NHẬN XÉT CỦA NGƯỜI HƯỚNG DẪN THỰC HÀNH</div>' +
+      '<p>Kính gửi: - Lãnh đạo: Bệnh viện Đa khoa Trung tâm tỉnh Gia Lai;</p>' +
+      '<p>&nbsp;&nbsp;&nbsp;&nbsp;- Lãnh đạo khoa (phòng): ' + empDonVi + '</p>' +
+      '<p>Tôi tên: <b>' + (stage.nguoiHuongDan || '……………………') + '</b> Ngày, tháng, năm sinh: ' + empNgaySinh + '</p>' +
+      '<p>Văn bằng chuyên môn: ' + empTrinhDo + '</p>' +
+      '<p>Đơn vị công tác: ' + empDonVi + '</p>' +
+      '<p>Qua thời gian phân công hướng dẫn thực hành:</p>' +
+      '<p>Ông(bà): <b>' + (t.hoTen||'') + '</b> Ngày, tháng, năm sinh: ' + (t.ngaySinh?fmtDate(t.ngaySinh):'……………') + '</p>' +
+      '<p>Văn bằng chuyên môn: ' + (t.trinhDoDaoTao || t.chucDanhDangKy || '……………………') + '</p>' +
+      '<p>Khoa (phòng)/bộ phận đăng ký thực hành: <b>' + empDonVi + '</b></p>' +
+      '<p>Tôi nhận xét kết quả thực hành đối với ông(bà) <b>' + (t.hoTen||'') + '</b> với những nội dung sau, cụ thể:</p>' +
+      '<p><b>1. Thời gian thực hành:</b> Từ ngày <b>' + fmtDate(stage.tuNgay) + '</b> đến ngày <b>' + fmtDate(stage.denNgay) + '</b></p>' +
+      '<p><b>2. Năng lực chuyên môn:</b></p>' +
+      Array(4).fill('<p>……………………………………………………………………………………………</p>').join('') +
+      '<p><b>3. Đạo đức nghề nghiệp:</b></p>' +
+      Array(4).fill('<p>……………………………………………………………………………………………</p>').join('') +
+      '<p>Tôi xin chịu hoàn toàn trách nhiệm về bản nhận xét trên./.</p>' +
+      '<table class="sign-block"><tr><td style="width:33%">NGƯỜI HƯỚNG DẪN<br><span class="sign-note">(Ký, ghi rõ họ tên)</span><br><br><br><br>' + (stage.nguoiHuongDan||'') + '</td><td style="width:33%">XÁC NHẬN CỦA KHOA<br><span class="sign-note">(Ký, ghi rõ họ tên)</span><br><br><br><br></td><td style="width:34%">XÁC NHẬN CỦA PHÒNG CHỈ ĐẠO TUYẾN<br><span class="sign-note">(Ký, ghi rõ họ tên)</span><br><br><br><br></td></tr></table>';
+    exportWordCustomDoc('BẢN NHẬN XÉT CỦA NGƯỜI HƯỚNG DẪN THỰC HÀNH', body, 'ban_nhan_xet_'+(t.hoTen||'').replace(/\s+/g,'_')+'_'+(stage.khoa||'').replace(/\s+/g,'_')+'.doc', { landscape:false });
+  }
+  // ---- Công văn phân công học viên thực hành & người hướng dẫn (gửi các khoa liên quan) ----
+  function congVanCanCuHtml(){
+    return '<p>Căn cứ Luật Khám bệnh, chữa bệnh ngày 09 tháng 01 năm 2023;</p>' +
+      '<p>Căn cứ Nghị định số 96/2023/NĐ-CP ngày 30 tháng 12 năm 2023 của Chính phủ quy định chi tiết một số điều của Luật Khám bệnh, chữa bệnh;</p>' +
+      '<p>Căn cứ Thông tư số 32/2023/TT-BYT ngày 31/12/2023 của Bộ Y tế về việc quy định chi tiết một số điều của Luật Khám bệnh, chữa bệnh;</p>' +
+      '<p>Thực hiện Quyết định số ……………/QĐ-BVĐKTT về việc ban hành Quy trình tiếp nhận và quản lý học viên thực hành để cấp giấy phép hành nghề khám bệnh, chữa bệnh tại Bệnh viện;</p>';
+  }
+  function congVanTrachNhiemKhoaHtml(){
+    const sub = 'margin-left:20px;margin-top:2px';
+    return '<p>Các khoa lâm sàng có học viên thực hành có trách nhiệm như sau:</p>' +
+      '<p><b>1. Cử nhân viên hướng dẫn thực hành cho học viên đảm bảo đúng quy định sau đây</b></p>' +
+      '<p style="margin-top:4px">1.1. Người hướng dẫn thực hành phải đáp ứng các điều kiện:</p>' +
+      '<p style="' + sub + '">a) Có chứng chỉ hành nghề;</p>' +
+      '<p style="' + sub + '">b) Có phạm vi hoạt động chuyên môn phù hợp với văn bằng của người thực hành;</p>' +
+      '<p style="' + sub + '">c) Có trình độ đào tạo tương đương hoặc cao hơn người thực hành và có thời gian hành nghề liên tục từ 3 năm trở lên.</p>' +
+      '<p style="margin-top:6px">1.2. Trách nhiệm của người hướng dẫn thực hành:</p>' +
+      '<p style="' + sub + '">a) Hướng dẫn thực hành thuộc phạm vi hoạt động chuyên môn cho người học thực hành;</p>' +
+      '<p style="' + sub + '">b) Nhận xét về kết quả thực hành và chịu trách nhiệm về nội dung nhận xét của mình, phổ biến nội dung nhận xét cho người học thực hành biết để họ nỗ lực học tập <i>(trên dữ liệu chia sẻ/Chỉ đạo tuyến/Giấy xác nhận của khoa/mẫu nhận xét học viên thực hành)</i>;</p>' +
+      '<p style="' + sub + '">c) Chịu trách nhiệm trong trường hợp người thực hành gây sai sót chuyên môn trong quá trình thực hành, gây ảnh hưởng đến sức khỏe người bệnh do lỗi của người hướng dẫn thực hành.</p>' +
+      '<p style="margin-top:6px"><b>2. Đăng ký danh sách người hướng dẫn học viên thực hành</b></p>' +
+      '<p style="' + sub + '">- Đăng ký theo mẫu (phụ lục 1);</p>' +
+      '<p style="' + sub + '">- Thời gian đăng ký gửi về phòng Chỉ đạo tuyến chậm nhất sau 1 ngày tiếp nhận công văn này.</p>' +
+      '<p><i>* Lưu ý: Một người hướng dẫn thực hành chỉ được hướng dẫn tối đa 5 người thực hành trong cùng một thời điểm.</i></p>';
+  }
+  function exportMauCongVanPhanCong(){
+    const body = '<table class="kv"><tr>' +
+        '<td style="width:38%"><div class="hd-org" style="font-size:11.5pt">BỆNH VIỆN ĐA KHOA TỈNH<br>PHÒNG CHỈ ĐẠO TUYẾN</div></td>' +
+        '<td style="width:62%" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap" nowrap="nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>' +
+          '<div style="text-align:center;font-weight:bold;text-decoration:underline">Độc lập - Tự do - Hạnh phúc</div></td>' +
+      '</tr></table>' +
+      '<p>Số: ……………/BVĐKTT-CĐT<br>V/v Phân công học viên thực hành chuyên môn và người hướng dẫn thực hành tại khoa lâm sàng</p>' +
+      '<p style="text-align:right;font-style:italic">……………, ngày …. tháng …. năm ……</p>' +
+      '<p>Kính gửi: Các khoa lâm sàng liên quan.</p>' +
+      congVanCanCuHtml() +
+      '<p>Nay, Phòng Chỉ đạo tuyến phân bổ học viên: ……………………………………………… (chức danh: ……………………) đến thực hành tại các khoa lâm sàng như sau:</p>' +
+      Array(3).fill('<p>- Khoa ……………………………: …… tháng (từ ngày …………… đến ngày ……………);</p>').join('') +
+      congVanTrachNhiemKhoaHtml() +
+      '<p>Nhận được công văn này đề nghị các khoa thực hiện đúng quy định./.</p>' +
+      '<table class="kv" style="margin-top:16px"><tr>' +
+        '<td style="width:50%"><i>Nơi nhận:<br>- Như trên;<br>- Phòng TCCB, TCKT;<br>- Lưu: CĐT.</i></td>' +
+        '<td style="width:50%;text-align:center"><b>P. TRƯỞNG PHÒNG PHỤ TRÁCH</b><br><br><br><br><br></td>' +
+      '</tr></table>';
+    exportWordCustomDoc('CÔNG VĂN PHÂN CÔNG HỌC VIÊN THỰC HÀNH VÀ NGƯỜI HƯỚNG DẪN', body, 'mau_cong_van_phan_cong_hoc_vien.doc', { landscape:false });
+  }
+  function exportCongVanPhanCongFilled(t){
+    const stages = (t.giaiDoan||[]).slice().sort((a,b)=> (a.tuNgay||'').localeCompare(b.tuNgay||''));
+    const rows = stages.length
+      ? stages.map(s=>'<p>- Khoa '+s.khoa+': '+monthsDecimal(s.tuNgay,s.denNgay).toFixed(1)+' tháng (từ ngày '+fmtDate(s.tuNgay)+' đến ngày '+fmtDate(s.denNgay)+');</p>').join('')
+      : '<p>- (Chưa có giai đoạn thực hành nào được xác nhận)</p>';
+    const body = '<table class="kv"><tr>' +
+        '<td style="width:38%"><div class="hd-org" style="font-size:11.5pt">BỆNH VIỆN ĐA KHOA TỈNH<br>PHÒNG CHỈ ĐẠO TUYẾN</div></td>' +
+        '<td style="width:62%" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap" nowrap="nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>' +
+          '<div style="text-align:center;font-weight:bold;text-decoration:underline">Độc lập - Tự do - Hạnh phúc</div></td>' +
+      '</tr></table>' +
+      '<p>Số: ……………/BVĐKTT-CĐT<br>V/v Phân công học viên thực hành chuyên môn và người hướng dẫn thực hành tại khoa lâm sàng</p>' +
+      '<p style="text-align:right;font-style:italic">Gia Lai, ' + vietnameseDateLong(todayISO()) + '</p>' +
+      '<p>Kính gửi: Các khoa lâm sàng liên quan.</p>' +
+      congVanCanCuHtml() +
+      '<p>Nay, Phòng Chỉ đạo tuyến phân bổ học viên: <b>' + (t.hoTen||'') + '</b> (chức danh: ' + (t.chucDanhDangKy||'') + ', mã hồ sơ: ' + (t.maHoSo||'—') + ') đến thực hành tại các khoa lâm sàng như sau:</p>' +
+      rows +
+      congVanTrachNhiemKhoaHtml() +
+      '<p>Nhận được công văn này đề nghị các khoa thực hiện đúng quy định./.</p>' +
+      '<table class="kv" style="margin-top:16px"><tr>' +
+        '<td style="width:50%"><i>Nơi nhận:<br>- Như trên;<br>- Phòng TCCB, TCKT;<br>- Lưu: CĐT.</i></td>' +
+        '<td style="width:50%;text-align:center"><b>' + (state.adminUserName ? 'P. TRƯỞNG PHÒNG PHỤ TRÁCH<br>' + state.adminUserName : 'P. TRƯỞNG PHÒNG PHỤ TRÁCH') + '</b><br><br><br><br></td>' +
+      '</tr></table>';
+    exportWordCustomDoc('CÔNG VĂN PHÂN CÔNG HỌC VIÊN THỰC HÀNH VÀ NGƯỜI HƯỚNG DẪN', body, 'cong_van_phan_cong_'+(t.hoTen||'').replace(/\s+/g,'_')+'.doc', { landscape:false });
+  }
+  // ---- Quyết định phân công người hướng dẫn thực hành (trình Giám đốc ký) ----
+  function quyetDinhPhanCongCanCuHtml(){
+    return '<p>Căn cứ Luật Khám bệnh, chữa bệnh ngày 09 tháng 01 năm 2023;</p>' +
+      '<p>Căn cứ Nghị định số 96/2023/NĐ-CP ngày 30 tháng 12 năm 2023 của Chính phủ quy định chi tiết một số điều của Luật Khám bệnh, chữa bệnh;</p>' +
+      '<p>Căn cứ Quyết định quy định chức năng, nhiệm vụ, quyền hạn và cơ cấu tổ chức của Bệnh viện Đa khoa Trung tâm tỉnh Gia Lai;</p>' +
+      '<p>Căn cứ Bản công bố cơ sở khám bệnh, chữa bệnh đáp ứng yêu cầu là cơ sở hướng dẫn thực hành của Bệnh viện Đa khoa Trung tâm tỉnh Gia Lai;</p>' +
+      '<p>Căn cứ Quyết định của Bệnh viện Đa khoa Trung tâm về việc ban hành giá đào tạo thực tập, thực hành; đào tạo thực hành để cấp giấy phép hành nghề tại Bệnh viện Đa khoa Trung tâm tỉnh Gia Lai;</p>' +
+      '<p>Xét đề nghị của học viên;</p>' +
+      '<p>Theo đề nghị của Trưởng phòng Chỉ đạo tuyến, Bệnh viện.</p>';
+  }
+  function exportMauQuyetDinhPhanCongNguoiHuongDan(){
+    const body = '<table class="kv"><tr>' +
+        '<td style="width:42%"><div class="hd-org" style="font-size:11pt">SỞ Y TẾ TỈNH GIA LAI<br>BỆNH VIỆN ĐA KHOA TRUNG TÂM<br><span class="muted">Số: ……………/QĐ-BVĐKTT</span></div></td>' +
+        '<td style="width:58%" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap" nowrap="nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>' +
+          '<div style="text-align:center;font-weight:bold;text-decoration:underline">Độc lập – Tự do – Hạnh phúc</div>' +
+          '<p style="text-align:right;font-style:italic;margin-top:6px">Gia Lai, ngày …. tháng …. năm ……</p></td>' +
+      '</tr></table>' +
+      '<div class="doc-title">QUYẾT ĐỊNH</div>' +
+      '<div class="doc-trichyeu">Về việc phân công người hướng dẫn thực hành</div>' +
+      '<p style="text-align:center;font-weight:bold">GIÁM ĐỐC BỆNH VIỆN ĐA KHOA TRUNG TÂM</p>' +
+      quyetDinhPhanCongCanCuHtml() +
+      '<p style="text-align:center;font-weight:bold;margin-top:14px">QUYẾT ĐỊNH:</p>' +
+      '<p><b>Điều 1.</b> Tiếp nhận ……………………………………, sinh ngày ……………………, có văn bằng chuyên môn …………………………… được thực hành tại các khoa lâm sàng thuộc Bệnh viện Đa khoa Trung tâm; Thời gian: ……… tháng, cụ thể:</p>' +
+      Array(3).fill('<p>- Khoa ……………………………: …… tháng, từ ngày …………… đến ngày ……………;</p>').join('') +
+      '<p><b>Điều 2.</b> Phân công ……………………………………………………………………………… chịu trách nhiệm hướng dẫn thực hành cho người có tên tại Điều 1 trong thời gian quy định tại Điều 1 Quyết định này.</p>' +
+      '<p><b>Điều 3.</b> Quyết định này có hiệu lực kể từ ngày …………………… Các ông (bà) có tên tại Điều 1, Điều 2 và Trưởng các phòng Tổ chức cán bộ, Kế hoạch tổng hợp, Tài chính - Kế toán, Chỉ đạo tuyến, Điều dưỡng; Trưởng các khoa có liên quan chịu trách nhiệm thi hành Quyết định này./.</p>' +
+      '<table class="kv" style="margin-top:16px"><tr>' +
+        '<td style="width:50%"><i>Nơi nhận:<br>- Như Điều 3;<br>- Lãnh đạo Bệnh viện;<br>- Lưu: VT, PCĐT.</i></td>' +
+        '<td style="width:50%;text-align:center"><b>GIÁM ĐỐC</b><br><br><br><br><br></td>' +
+      '</tr></table>';
+    exportWordCustomDoc('QUYẾT ĐỊNH VỀ VIỆC PHÂN CÔNG NGƯỜI HƯỚNG DẪN THỰC HÀNH', body, 'mau_quyet_dinh_phan_cong_nguoi_huong_dan.doc', { landscape:false });
+  }
+  function exportQuyetDinhPhanCongFilled(t){
+    const qd = t.quyetDinh || {};
+    const stages = (t.giaiDoan||[]).slice().sort((a,b)=> (a.tuNgay||'').localeCompare(b.tuNgay||''));
+    const tongThang = stages.reduce((s,x)=> s + monthsDecimal(x.tuNgay,x.denNgay), 0);
+    const rowsKhoa = stages.length
+      ? stages.map(s=>'<p>- Khoa '+s.khoa+': '+monthsDecimal(s.tuNgay,s.denNgay).toFixed(1)+' tháng, từ ngày '+fmtDate(s.tuNgay)+' đến ngày '+fmtDate(s.denNgay)+';</p>').join('')
+      : '<p>- (Chưa có giai đoạn thực hành nào được xác nhận)</p>';
+    const nguoiHDList = stages.filter(s=>s.nguoiHuongDan).map(s=>{
+      const emp = state.employees.find(e=>e.id===s.nguoiHuongDanId);
+      const chucVu = emp ? (emp.chucVu||emp.chuyenMon||'') : '';
+      const cchn = emp ? (emp.soCCHN||'') : '';
+      return s.nguoiHuongDan + (chucVu?', '+chucVu:'') + ', Khoa ' + s.khoa + (cchn ? ', chứng chỉ hành nghề số ' + cchn : '');
+    });
+    const dieu2Text = nguoiHDList.length
+      ? 'Phân công ' + nguoiHDList.join('; và ') + '; chịu trách nhiệm hướng dẫn thực hành cho ' + (t.hoTen||'') + ' trong thời gian quy định tại Điều 1 Quyết định này.'
+      : 'Phân công người hướng dẫn thực hành cho ' + (t.hoTen||'') + ' (chưa xác định đủ — vui lòng bổ sung khi các khoa đã phân công xong).';
+    const soHienThi = qd.soQD ? qd.soQD : '……………/QĐ-BVĐKTT';
+    const ngayHienThi = qd.ngayKy ? vietnameseDateLong(qd.ngayKy) : vietnameseDateLong(todayISO());
+    const ngayHieuLuc = qd.ngayKy ? fmtDate(qd.ngayKy) : (stages[0] ? fmtDate(stages[0].tuNgay) : '……………');
+    const body = '<table class="kv"><tr>' +
+        '<td style="width:42%"><div class="hd-org" style="font-size:11pt">SỞ Y TẾ TỈNH GIA LAI<br>BỆNH VIỆN ĐA KHOA TRUNG TÂM<br><span class="muted">Số: ' + soHienThi + '</span></div></td>' +
+        '<td style="width:58%" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap" nowrap="nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>' +
+          '<div style="text-align:center;font-weight:bold;text-decoration:underline">Độc lập – Tự do – Hạnh phúc</div>' +
+          '<p style="text-align:right;font-style:italic;margin-top:6px">Gia Lai, ' + ngayHienThi + '</p></td>' +
+      '</tr></table>' +
+      '<div class="doc-title">QUYẾT ĐỊNH</div>' +
+      '<div class="doc-trichyeu">Về việc phân công người hướng dẫn thực hành</div>' +
+      '<p style="text-align:center;font-weight:bold">GIÁM ĐỐC BỆNH VIỆN ĐA KHOA TRUNG TÂM</p>' +
+      quyetDinhPhanCongCanCuHtml() +
+      '<p style="text-align:center;font-weight:bold;margin-top:14px">QUYẾT ĐỊNH:</p>' +
+      '<p><b>Điều 1.</b> Tiếp nhận ' + (t.hoTen||'') + ', sinh ngày ' + fmtDate(t.ngaySinh) + ', có văn bằng chuyên môn ' + (t.trinhDoDaoTao||'') + ' được thực hành tại các khoa lâm sàng thuộc Bệnh viện Đa khoa Trung tâm; Thời gian: ' + tongThang.toFixed(1) + ' tháng, cụ thể:</p>' +
+      rowsKhoa +
+      '<p><b>Điều 2.</b> ' + dieu2Text + '</p>' +
+      '<p><b>Điều 3.</b> Quyết định này có hiệu lực kể từ ngày ' + ngayHieuLuc + '. Các ông (bà) có tên tại Điều 1, Điều 2 và Trưởng các phòng Tổ chức cán bộ, Kế hoạch tổng hợp, Tài chính - Kế toán, Chỉ đạo tuyến, Điều dưỡng; Trưởng các khoa có liên quan chịu trách nhiệm thi hành Quyết định này./.</p>' +
+      '<table class="kv" style="margin-top:16px"><tr>' +
+        '<td style="width:50%"><i>Nơi nhận:<br>- Như Điều 3;<br>- Lãnh đạo Bệnh viện;<br>- Lưu: VT, PCĐT.</i></td>' +
+        '<td style="width:50%;text-align:center"><b>GIÁM ĐỐC</b><br><br><br><br><br></td>' +
+      '</tr></table>';
+    exportWordCustomDoc('QUYẾT ĐỊNH VỀ VIỆC PHÂN CÔNG NGƯỜI HƯỚNG DẪN THỰC HÀNH', body, 'quyet_dinh_phan_cong_'+(t.hoTen||'').replace(/\s+/g,'_')+'.doc', { landscape:false });
+  }
+  // ---- Giấy giới thiệu (mỗi khi học viên đến khoa mới, kèm thông tin hành chính để trình khoa) ----
+  function giayGioiThieuCanCuHtml(){
+    return '<p>Căn cứ Luật Khám bệnh, chữa bệnh số 15/2023/QH15;</p>' +
+      '<p>Căn cứ Nghị định số 96/2023/NĐ-CP ngày 30/12/2023 của Chính phủ quy định chi tiết một số điều của Luật Khám bệnh, chữa bệnh;</p>' +
+      '<p>Căn cứ nhu cầu thực hành để cấp Giấy xác nhận quá trình thực hành phục vụ cấp Giấy phép hành nghề khám bệnh, chữa bệnh;</p>';
+  }
+  function giayGioiThieuBodyHtml(khoaTen, hoTen, ngaySinh, gioiTinh, chucDanh, trinhDo, donVi, cccd, dienThoai, noiDungTH, tuNgay, denNgay){
+    return '<table class="kv"><tr>' +
+        '<td style="width:42%"><div class="hd-org" style="font-size:11pt">SỞ Y TẾ TỈNH GIA LAI<br>BỆNH VIỆN ĐA KHOA TRUNG TÂM<br><span class="hd-sub">PHÒNG CHỈ ĐẠO TUYẾN</span><br><span class="muted">Số: ……………/GGT-CĐT</span></div></td>' +
+        '<td style="width:58%" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap" nowrap="nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>' +
+          '<div style="text-align:center;font-weight:bold;text-decoration:underline">Độc lập - Tự do - Hạnh phúc</div></td>' +
+      '</tr></table>' +
+      '<div class="doc-title">GIẤY GIỚI THIỆU</div>' +
+      '<p>Kính gửi: Trưởng khoa/phòng ' + khoaTen + '</p>' +
+      giayGioiThieuCanCuHtml() +
+      '<p>Phòng Chỉ đạo tuyến — Bệnh viện Đa khoa Trung tâm tỉnh Gia Lai trân trọng giới thiệu:</p>' +
+      '<p>* Họ và tên: <b>' + hoTen + '</b></p>' +
+      '<p>* Ngày, tháng, năm sinh: ' + ngaySinh + '</p>' +
+      '<p>* Giới tính: ' + gioiTinh + '</p>' +
+      '<p>* Chức danh chuyên môn: ' + chucDanh + '</p>' +
+      '<p>* Trình độ chuyên môn: ' + trinhDo + '</p>' +
+      '<p>* Đơn vị công tác (nếu có): ' + donVi + '</p>' +
+      '<p>* Số CCCD/Hộ chiếu: ' + cccd + '</p>' +
+      '<p>* Điện thoại liên hệ: ' + dienThoai + '</p>' +
+      '<p><b>Đến thực hành tại:</b></p>' +
+      '<p>* Khoa/Phòng: <b>' + khoaTen + '</b></p>' +
+      '<p>* Nội dung thực hành: ' + noiDungTH + '</p>' +
+      '<p>* Thời gian thực hành: Từ ngày ' + tuNgay + ' đến ngày ' + denNgay + '</p>' +
+      '<p><b>Đề nghị Trưởng khoa/phòng</b></p>' +
+      '<p>1. Tiếp nhận và phân công người hướng dẫn thực hành theo quy định.</p>' +
+      '<p>2. Tạo điều kiện để người thực hành được tham gia các hoạt động chuyên môn phù hợp với phạm vi thực hành.</p>' +
+      '<p>3. Theo dõi quá trình thực hành, nhận xét kết quả và xác nhận đầy đủ vào hồ sơ theo quy định.</p>' +
+      '<p>4. Báo cáo về Phòng Chỉ đạo tuyến các trường hợp nghỉ thực hành, vi phạm nội quy hoặc các vấn đề phát sinh (nếu có).</p>' +
+      '<p>Rất mong sự phối hợp của Quý khoa/phòng.</p>' +
+      '<p>Xin trân trọng cảm ơn!</p>' +
+      '<table class="sign-block"><tr><td style="width:50%">&nbsp;</td><td style="width:50%">……, ngày ….. tháng ….. năm ……<br>TRƯỞNG PHÒNG CHỈ ĐẠO TUYẾN<br><span class="sign-note">(Ký, ghi rõ họ tên)</span><br><br><br><br></td></tr></table>';
+  }
+  function exportMauGiayGioiThieu(){
+    const body = giayGioiThieuBodyHtml(
+      '……………………………………………………',
+      '………………………………………………………………………………………..',
+      '…………………………………………………………………………….',
+      '………………………………………………………………………………………….',
+      '……………………………………………………………………',
+      '……………………………………………………………………….',
+      '…………………………………………………………………………..',
+      '………………………………………………………………………….',
+      '……………………………………………………………………………',
+      '…………………………………………………………………………',
+      '…../…../……..', '…../…../……..'
+    );
+    exportWordCustomDoc('GIẤY GIỚI THIỆU', body, 'mau_giay_gioi_thieu.doc', { landscape:false });
+  }
+  function exportGiayGioiThieuFilled(t, stage){
+    const body = giayGioiThieuBodyHtml(
+      stage.khoa || '……………………………',
+      t.hoTen || '',
+      fmtDate(t.ngaySinh) || '……………',
+      t.gioiTinh || '……………',
+      t.chucDanhDangKy || '……………',
+      t.trinhDoDaoTao || '……………',
+      t.donViCuTri || '……………',
+      t.cccd || '……………',
+      t.soDienThoai || '……………',
+      t.mucDichThucHanh || 'Thực hành khám bệnh, chữa bệnh theo phạm vi chuyên môn',
+      fmtDate(stage.tuNgay) || '……………',
+      fmtDate(stage.denNgay) || '……………'
+    );
+    exportWordCustomDoc('GIẤY GIỚI THIỆU', body, 'giay_gioi_thieu_'+(t.hoTen||'').replace(/\s+/g,'_')+'_'+(stage.khoa||'').replace(/\s+/g,'_')+'.doc', { landscape:false });
+  }
+  // ---- Giấy xác nhận hoàn thành quá trình thực hành (Phòng CĐT cấp khi kết thúc toàn bộ đợt) ----
+  function giayXacNhanHoanThanhBodyHtml(hoTen, ngaySinh, trinhDo, rowsKhoaHtml, tongThang, tuNgay, denNgay, ketQua, canCuQuyetDinhHtml){
+    return '<table class="kv"><tr>' +
+        '<td style="width:42%"><div class="hd-org" style="font-size:11pt">SỞ Y TẾ TỈNH GIA LAI<br>BỆNH VIỆN ĐA KHOA TRUNG TÂM<br><span class="muted">Số: ……………/XN-CĐT</span></div></td>' +
+        '<td style="width:58%" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap" nowrap="nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>' +
+          '<div style="text-align:center;font-weight:bold;text-decoration:underline">Độc lập - Tự do - Hạnh phúc</div></td>' +
+      '</tr></table>' +
+      '<div class="doc-title">GIẤY XÁC NHẬN</div>' +
+      '<div class="doc-trichyeu">Về việc hoàn thành quá trình thực hành khám bệnh, chữa bệnh</div>' +
+      '<p style="text-align:right;font-style:italic">Gia Lai, ' + vietnameseDateLong(todayISO()) + '</p>' +
+      (canCuQuyetDinhHtml || '') +
+      '<p>Phòng Chỉ đạo tuyến — Bệnh viện Đa khoa Trung tâm tỉnh Gia Lai xác nhận:</p>' +
+      '<p>Ông (bà): <b>' + hoTen + '</b></p>' +
+      '<p>Ngày, tháng, năm sinh: ' + ngaySinh + '</p>' +
+      '<p>Văn bằng chuyên môn: ' + trinhDo + '</p>' +
+      '<p>Đã hoàn thành quá trình thực hành khám bệnh, chữa bệnh tại Bệnh viện Đa khoa Trung tâm tỉnh Gia Lai, cụ thể tại các khoa lâm sàng như sau:</p>' +
+      rowsKhoaHtml +
+      '<p>Tổng thời gian thực hành: <b>' + tongThang + ' tháng</b>, từ ngày <b>' + tuNgay + '</b> đến ngày <b>' + denNgay + '</b>.</p>' +
+      '<p>Kết quả thực hành: <b>' + ketQua + '</b>.</p>' +
+      '<p>Giấy xác nhận này được cấp làm cơ sở để ông (bà) hoàn thiện hồ sơ đề nghị cấp Giấy phép hành nghề khám bệnh, chữa bệnh theo quy định./.</p>' +
+      '<table class="kv" style="margin-top:16px"><tr>' +
+        '<td style="width:50%"><i>Nơi nhận:<br>- Như trên;<br>- Lưu: CĐT.</i></td>' +
+        '<td style="width:50%;text-align:center"><b>TRƯỞNG PHÒNG CHỈ ĐẠO TUYẾN</b><br><span class="sign-note">(Ký, ghi rõ họ tên, đóng dấu)</span><br><br><br><br></td>' +
+      '</tr></table>';
+  }
+  function exportMauGiayXacNhanHoanThanh(){
+    const rows = Array(3).fill('<p>- Khoa ……………………………: …… tháng (từ ngày …………… đến ngày ……………);</p>').join('');
+    const canCu = '<p style="font-style:italic">Căn cứ Quyết định số ……………/QĐ-BVĐKTT ngày …………… của Giám đốc Bệnh viện về việc phân công người hướng dẫn thực hành;</p>';
+    const body = giayXacNhanHoanThanhBodyHtml(
+      '………………………………………………………………………………………..',
+      '…………………………………………………………………………….',
+      '……………………………………………………………………',
+      rows, '……', '……………', '……………', '……………………………………………', canCu
+    );
+    exportWordCustomDoc('GIẤY XÁC NHẬN HOÀN THÀNH QUÁ TRÌNH THỰC HÀNH', body, 'mau_giay_xac_nhan_hoan_thanh_thuc_hanh.doc', { landscape:false });
+  }
+  function exportGiayXacNhanHoanThanhFilled(t){
+    const qd = t.quyetDinh || {};
+    const stages = (t.giaiDoan||[]).slice().sort((a,b)=> (a.tuNgay||'').localeCompare(b.tuNgay||''));
+    const tongThang = stages.reduce((s,x)=> s + monthsDecimal(x.tuNgay,x.denNgay), 0);
+    const rowsKhoaHtml = stages.length
+      ? stages.map(s=>'<p>- Khoa '+s.khoa+': '+monthsDecimal(s.tuNgay,s.denNgay).toFixed(1)+' tháng (từ ngày '+fmtDate(s.tuNgay)+' đến ngày '+fmtDate(s.denNgay)+');</p>').join('')
+      : '<p>- (Chưa có giai đoạn thực hành nào được xác nhận)</p>';
+    const chuaKetThuc = stages.some(s=>s.trangThai!=='Đã kết thúc');
+    const ketQua = chuaKetThuc ? '……………………………………………… (còn giai đoạn chưa kết thúc — vui lòng kiểm tra lại trước khi cấp)' : 'Đạt yêu cầu';
+    const canCu = qd.soQD
+      ? '<p style="font-style:italic">Căn cứ Quyết định số ' + qd.soQD + (qd.ngayKy ? ' ngày ' + fmtDate(qd.ngayKy) : '') + ' của Giám đốc Bệnh viện về việc phân công người hướng dẫn thực hành;</p>'
+      : '<p style="font-style:italic;color:var(--red)">⚠ Chưa có số Quyết định phân công người hướng dẫn — vào mục "📜 Quyết định" để nhập Số QĐ/ngày ký trước khi cấp giấy này.</p>';
+    const body = giayXacNhanHoanThanhBodyHtml(
+      t.hoTen || '', fmtDate(t.ngaySinh) || '……………', t.trinhDoDaoTao || t.chucDanhDangKy || '……………',
+      rowsKhoaHtml, tongThang.toFixed(1),
+      stages[0] ? fmtDate(stages[0].tuNgay) : '……………',
+      stages[stages.length-1] ? fmtDate(stages[stages.length-1].denNgay) : '……………',
+      ketQua, canCu
+    );
+    exportWordCustomDoc('GIẤY XÁC NHẬN HOÀN THÀNH QUÁ TRÌNH THỰC HÀNH', body, 'giay_xac_nhan_hoan_thanh_'+(t.hoTen||'').replace(/\s+/g,'_')+'.doc', { landscape:false });
+  }
+  // ---- Bản nhận xét tổng hợp cuối khóa (Phòng CĐT tổng hợp toàn bộ quá trình thực hành) ----
+  function banNhanXetTongHopBodyHtml(hoTen, ngaySinh, trinhDo, bangGiaiDoanHtml, tongThang, ghiChuNhanXet, ketLuanHtml, canCuQuyetDinhHtml){
+    return '<table class="kv"><tr>' +
+        '<td style="width:42%"><div class="hd-org" style="font-size:11pt">SỞ Y TẾ TỈNH GIA LAI<br>BỆNH VIỆN ĐA KHOA TRUNG TÂM<br><span class="hd-sub">PHÒNG CHỈ ĐẠO TUYẾN</span><br><span class="muted">Số: ……………/NX-CĐT</span></div></td>' +
+        '<td style="width:58%" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap" nowrap="nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>' +
+          '<div style="text-align:center;font-weight:bold;text-decoration:underline">Độc lập - Tự do - Hạnh phúc</div></td>' +
+      '</tr></table>' +
+      '<div class="doc-title">BẢN NHẬN XÉT TỔNG HỢP</div>' +
+      '<div class="doc-trichyeu">Quá trình thực hành khám bệnh, chữa bệnh</div>' +
+      '<p style="text-align:right;font-style:italic">Gia Lai, ' + vietnameseDateLong(todayISO()) + '</p>' +
+      '<p>Kính gửi: Ban Giám đốc Bệnh viện Đa khoa Trung tâm tỉnh Gia Lai.</p>' +
+      (canCuQuyetDinhHtml || '') +
+      '<p>Phòng Chỉ đạo tuyến tổng hợp và nhận xét quá trình thực hành của:</p>' +
+      '<p>Ông (bà): <b>' + hoTen + '</b> &nbsp;&nbsp; Ngày, tháng, năm sinh: ' + ngaySinh + '</p>' +
+      '<p>Văn bằng chuyên môn: ' + trinhDo + '</p>' +
+      '<p><b>1. Tổng hợp kết quả từng giai đoạn thực hành</b> (Tổng: <b>' + tongThang + ' tháng</b>)</p>' +
+      bangGiaiDoanHtml +
+      '<p style="margin-top:10px"><b>2. Nhận xét chung của Phòng Chỉ đạo tuyến</b></p>' +
+      '<p style="margin-left:0px">- Ý thức tổ chức kỷ luật, chấp hành quy chế, quy định của Bệnh viện: ' + ghiChuNhanXet + '</p>' +
+      Array(3).fill('<p>………………………………………………………………………………………………………………</p>').join('') +
+      '<p style="margin-top:10px"><b>3. Kết luận</b></p>' +
+      ketLuanHtml +
+      '<p style="margin-top:10px">Kính đề nghị Ban Giám đốc xem xét, cấp Giấy xác nhận hoàn thành quá trình thực hành cho ông (bà) theo quy định./.</p>' +
+      '<table class="kv" style="margin-top:16px"><tr>' +
+        '<td style="width:50%"><i>Nơi nhận:<br>- Như trên;<br>- Lưu: CĐT.</i></td>' +
+        '<td style="width:50%;text-align:center"><b>TRƯỞNG PHÒNG CHỈ ĐẠO TUYẾN</b><br><span class="sign-note">(Ký, ghi rõ họ tên)</span><br><br><br><br></td>' +
+      '</tr></table>';
+  }
+  function exportMauBanNhanXetTongHop(){
+    const rows = '<table class="data"><thead><tr><th style="width:6%">STT</th><th>Khoa/phòng</th><th style="width:13%">Từ ngày</th><th style="width:13%">Đến ngày</th><th style="width:11%">Số tháng</th><th style="width:15%">Người hướng dẫn</th><th style="width:14%">Kết quả</th></tr></thead><tbody>' +
+      Array(3).fill('<tr><td style="text-align:center">…</td><td>……………………………</td><td style="text-align:center">……………</td><td style="text-align:center">……………</td><td style="text-align:center">……</td><td>……………………………</td><td style="text-align:center">……………</td></tr>').join('') +
+      '</tbody></table>';
+    const ketLuan = '<p>☐ Đủ điều kiện đề nghị cấp Giấy xác nhận hoàn thành quá trình thực hành.</p>' +
+      '<p>☐ Chưa đủ điều kiện, lý do: …………………………………………………………………………</p>';
+    const canCu = '<p style="font-style:italic">Căn cứ Quyết định số ……………/QĐ-BVĐKTT ngày …………… của Giám đốc Bệnh viện về việc phân công người hướng dẫn thực hành;</p>';
+    const body = banNhanXetTongHopBodyHtml(
+      '………………………………………………………………………………………..', '…………………………………………………………………………….',
+      '……………………………………………………………………', rows, '……', '……………………………………………', ketLuan, canCu
+    );
+    exportWordCustomDoc('BẢN NHẬN XÉT TỔNG HỢP QUÁ TRÌNH THỰC HÀNH', body, 'mau_ban_nhan_xet_tong_hop_cuoi_khoa.doc', { landscape:true });
+  }
+  function exportBanNhanXetTongHopFilled(t){
+    const qd = t.quyetDinh || {};
+    const stages = (t.giaiDoan||[]).slice().sort((a,b)=> (a.tuNgay||'').localeCompare(b.tuNgay||''));
+    const tongThang = stages.reduce((s,x)=> s + monthsDecimal(x.tuNgay,x.denNgay), 0);
+    const rowsBody = stages.length
+      ? stages.map((s,i)=> '<tr><td style="text-align:center">'+(i+1)+'</td><td>'+(s.khoa||'')+'</td><td style="text-align:center">'+fmtDate(s.tuNgay)+'</td><td style="text-align:center">'+fmtDate(s.denNgay)+'</td><td style="text-align:center">'+monthsDecimal(s.tuNgay,s.denNgay).toFixed(1)+'</td><td>'+(s.nguoiHuongDan||'')+'</td><td style="text-align:center">'+(s.ketQua||'Chưa đánh giá')+'</td></tr>').join('')
+      : '<tr><td colspan="7" style="text-align:center">(Chưa có giai đoạn thực hành nào)</td></tr>';
+    const rows = '<table class="data"><thead><tr><th style="width:6%">STT</th><th>Khoa/phòng</th><th style="width:13%">Từ ngày</th><th style="width:13%">Đến ngày</th><th style="width:11%">Số tháng</th><th style="width:15%">Người hướng dẫn</th><th style="width:14%">Kết quả</th></tr></thead><tbody>' +
+      rowsBody + '</tbody></table>';
+    const coKetQuaXau = stages.some(s=> s.ketQua==='Chưa đạt' || s.ketQua==='Đạt có điều kiện');
+    const chuaKetThuc = stages.some(s=>s.trangThai!=='Đã kết thúc');
+    const dieuKienDat = !chuaKetThuc && !coKetQuaXau && stages.length>0;
+    const ketLuan = dieuKienDat
+      ? '<p><b>☑</b> Đủ điều kiện đề nghị cấp Giấy xác nhận hoàn thành quá trình thực hành.</p><p>☐ Chưa đủ điều kiện, lý do: …………………………………………………………………………</p>'
+      : '<p>☐ Đủ điều kiện đề nghị cấp Giấy xác nhận hoàn thành quá trình thực hành.</p><p><b>☑</b> Chưa đủ điều kiện, lý do: ' + (chuaKetThuc ? 'còn giai đoạn chưa kết thúc' : (coKetQuaXau ? 'có giai đoạn kết quả chưa đạt/đạt có điều kiện, cần bổ sung nhận xét' : '……………………………………………………………………')) + '</p>';
+    const canCu = qd.soQD
+      ? '<p style="font-style:italic">Căn cứ Quyết định số ' + qd.soQD + (qd.ngayKy ? ' ngày ' + fmtDate(qd.ngayKy) : '') + ' của Giám đốc Bệnh viện về việc phân công người hướng dẫn thực hành;</p>'
+      : '<p style="font-style:italic;color:var(--red)">⚠ Chưa có số Quyết định phân công người hướng dẫn — vào mục "📜 Quyết định" để nhập Số QĐ/ngày ký trước khi trình bản nhận xét này.</p>';
+    const body = banNhanXetTongHopBodyHtml(
+      t.hoTen || '', t.ngaySinh ? fmtDate(t.ngaySinh) : '……………',
+      t.trinhDoDaoTao || t.chucDanhDangKy || '……………', rows, tongThang.toFixed(1),
+      '……………………………………………', ketLuan, canCu
+    );
+    exportWordCustomDoc('BẢN NHẬN XÉT TỔNG HỢP QUÁ TRÌNH THỰC HÀNH', body, 'ban_nhan_xet_tong_hop_'+(t.hoTen||'').replace(/\s+/g,'_')+'.doc', { landscape:true });
+  }
+  const HV_MAU_LIBRARY = [
+    { key:'donDeNghi', ten:'Đơn đề nghị thực hành khám bệnh, chữa bệnh', fn:'exportMauDonDeNghi' },
+    { key:'camKet', ten:'Bản cam kết', fn:'exportMauBanCamKet' },
+    { key:'syll', ten:'Sơ yếu lý lịch tự thuật', fn:'exportMauSoYeuLyLich' },
+    { key:'phieuTiepNhan', ten:'Phiếu tiếp nhận hồ sơ', fn:'exportMauPhieuTiepNhan' },
+    { key:'banNhanXet', ten:'Bản nhận xét của người hướng dẫn thực hành', fn:'exportMauBanNhanXet' },
+  ];
+  // Lưu ý: Công văn phân công, Quyết định phân công, Giấy giới thiệu, Giấy xác nhận hoàn thành
+  // KHÔNG đưa vào thư viện mẫu điền tay của học viên — đây là văn bản CĐT tự phát hành sẵn
+  // theo từng học viên cụ thể (qua các nút trong modal "🏥 Phân khoa"), tránh gây nhầm lẫn.
+  // Các hàm exportMauCongVanPhanCong, exportMauQuyetDinhPhanCongNguoiHuongDan,
+  // exportMauGiayGioiThieu, exportMauGiayXacNhanHoanThanh vẫn giữ nguyên để admin dùng khi cần
+  // xuất bản mẫu trống tham khảo (gọi trực tiếp nếu cần, không hiển thị trong danh sách trên).
+  // ---- Mẫu tự do do Admin đính kèm thêm (đọc file gốc, không nén/không kiểm tra ảnh) ----
+  function readGenericFileAsDataURL(file){
+    return new Promise(function(resolve, reject){
+      if (file.size > 8 * 1024 * 1024){ reject(new Error('File quá lớn (tối đa 8MB).')); return; }
+      const reader = new FileReader();
+      reader.onload = function(){ resolve({ dataUrl: reader.result, name: file.name, mime: file.type || 'application/octet-stream' }); };
+      reader.onerror = function(){ reject(new Error('Lỗi đọc file.')); };
+      reader.readAsDataURL(file);
+    });
+  }
+  function downloadCustomTemplate(c){
+    const a = document.createElement('a');
+    a.href = c.fileDataUrl; a.download = c.fileName || (c.ten + '.doc');
+    document.body.appendChild(a); a.click(); a.remove();
+  }
+  function openAddCustomTemplateModal(){
+    const overlay = el(`<div class="modal-overlay"><div class="modal" style="max-width:480px">
+      <h3>➕ Thêm mẫu mới vào thư viện</h3>
+      <p class="muted" style="margin-top:-6px">Đính kèm mẫu Word/PDF/ảnh bất kỳ để chia sẻ cho tất cả học viên tải xuống.</p>
+      <div class="field"><label>Tên hiển thị của mẫu *</label><input id="mauadd-ten" placeholder="VD: Giấy giới thiệu về khoa thực hành" /></div>
+      <div class="field"><label>Chọn file (Word/PDF/ảnh) *</label><input id="mauadd-file" type="file" accept=".doc,.docx,.pdf,image/*" /></div>
+      <div id="mauadd-preview" class="muted" style="margin-top:6px">Chưa chọn file.</div>
+      <div class="row-flex" style="justify-content:flex-end;margin-top:14px">
+        <button class="secondary" id="mauadd-cancel">Hủy</button>
+        <button id="mauadd-save">💾 Lưu vào thư viện</button>
+      </div>
+    </div></div>`);
+    root.appendChild(overlay);
+    let pending = null;
+    overlay.querySelector('#mauadd-file').onchange = async (e)=>{
+      const file = e.target.files[0];
+      const prev = overlay.querySelector('#mauadd-preview');
+      if (!file) return;
+      prev.textContent = 'Đang xử lý…';
+      try {
+        pending = await readGenericFileAsDataURL(file);
+        prev.textContent = '📄 ' + pending.name;
+      } catch(err){
+        prev.textContent = '⚠ ' + err.message;
+        pending = null;
+      }
+    };
+    overlay.querySelector('#mauadd-cancel').onclick = ()=> overlay.remove();
+    overlay.querySelector('#mauadd-save').onclick = async ()=>{
+      const ten = overlay.querySelector('#mauadd-ten').value.trim();
+      if (!ten){ alert('Vui lòng nhập tên hiển thị của mẫu.'); return; }
+      if (!pending){ alert('Vui lòng chọn file mẫu.'); return; }
+      state.customTemplates = state.customTemplates || [];
+      state.customTemplates.push({ id: uid('mau'), ten, fileDataUrl: pending.dataUrl, fileName: pending.name, mime: pending.mime, createdAt: todayISO() });
+      await saveCustomTemplates();
+      overlay.remove();
+      showToast('Đã thêm mẫu vào thư viện.');
+      render();
+    };
+  }
+  function openReplaceCustomTemplateModal(c){
+    const overlay = el(`<div class="modal-overlay"><div class="modal" style="max-width:480px">
+      <h3>✏️ Thay file cho mẫu — ${c.ten}</h3>
+      <p class="muted" style="margin-top:-6px">File mới sẽ thay thế hoàn toàn file cũ, giữ nguyên tên hiển thị "${c.ten}".</p>
+      <div class="field"><label>Tên hiển thị</label><input id="mauedit-ten" value="${c.ten}" /></div>
+      <div class="field"><label>Chọn file mới (Word/PDF/ảnh) *</label><input id="mauedit-file" type="file" accept=".doc,.docx,.pdf,image/*" /></div>
+      <div id="mauedit-preview" class="muted" style="margin-top:6px">File hiện tại: 📄 ${c.fileName||c.ten}</div>
+      <div class="row-flex" style="justify-content:flex-end;margin-top:14px">
+        <button class="secondary" id="mauedit-cancel">Hủy</button>
+        <button id="mauedit-save">💾 Lưu thay thế</button>
+      </div>
+    </div></div>`);
+    root.appendChild(overlay);
+    let pending = null;
+    overlay.querySelector('#mauedit-file').onchange = async (e)=>{
+      const file = e.target.files[0];
+      const prev = overlay.querySelector('#mauedit-preview');
+      if (!file) return;
+      prev.textContent = 'Đang xử lý…';
+      try {
+        pending = await readGenericFileAsDataURL(file);
+        prev.textContent = '📄 ' + pending.name + ' (mới)';
+      } catch(err){
+        prev.textContent = '⚠ ' + err.message;
+        pending = null;
+      }
+    };
+    overlay.querySelector('#mauedit-cancel').onclick = ()=> overlay.remove();
+    overlay.querySelector('#mauedit-save').onclick = async ()=>{
+      const ten = overlay.querySelector('#mauedit-ten').value.trim();
+      if (!ten){ alert('Vui lòng nhập tên hiển thị.'); return; }
+      c.ten = ten;
+      if (pending){ c.fileDataUrl = pending.dataUrl; c.fileName = pending.name; c.mime = pending.mime; }
+      await saveCustomTemplates();
+      overlay.remove();
+      showToast('Đã cập nhật mẫu trong thư viện.');
+      render();
+    };
+  }
+  function renderHvMauLibraryHtml(opts){
+    opts = opts || {};
+    const hidden = state.hiddenBuiltinMau || [];
+    const custom = state.customTemplates || [];
+    const builtinBtns = HV_MAU_LIBRARY.filter(m=>opts.allowManage || !hidden.includes(m.key)).map(m=>{
+      const isHidden = hidden.includes(m.key);
+      return `<span style="display:inline-flex;align-items:center;gap:4px${isHidden?';opacity:0.5':''}">
+        <button class="secondary" data-mau="${m.key}" ${isHidden?'disabled title="Đang bị ẩn khỏi thư viện cho học viên"':''}>📄 ${m.ten}${isHidden?' (đang ẩn)':''}</button>
+        ${opts.allowManage ? `<button class="ghost small-btn" data-mau-toggle-hide="${m.key}" title="${isHidden?'Hiện lại mẫu này':'Ẩn mẫu này khỏi thư viện (nếu anh muốn dùng mẫu tự thêm thay cho mẫu chuẩn)'}">${isHidden?'👁 Hiện lại':'🙈 Ẩn'}</button>` : ''}
+      </span>`;
+    }).join('');
+    const customBtns = custom.map(c=>`
+      <span style="display:inline-flex;align-items:center;gap:4px">
+        <button class="secondary" data-mau-custom="${c.id}">📄 ${c.ten}</button>
+        ${opts.allowManage ? `<button class="ghost small-btn" data-mau-edit="${c.id}" title="Thay file khác cho mẫu này">✏️ Thay file</button>` : ''}
+        ${opts.allowManage ? `<button class="ghost small-btn" data-mau-del="${c.id}" title="Xoá mẫu này khỏi thư viện">🗑️ Xoá</button>` : ''}
+      </span>
+    `).join('');
+    return `<div class="card"><h3 style="font-size:14px">📚 Thư viện mẫu văn bản</h3>
+      <p class="muted" style="margin-top:-6px">Tải mẫu chuẩn (Word) về điền tay hoặc đánh máy, ký tên rồi chụp/scan để đính kèm vào hồ sơ.</p>
+      ${opts.allowManage ? `<p class="muted" style="margin-top:-4px;font-style:italic">💡 Muốn thay hẳn 1 mẫu chuẩn bằng file riêng của bệnh viện? Bấm "🙈 Ẩn" mẫu chuẩn đó, rồi "➕ Thêm mẫu mới" với file của anh — học viên sẽ chỉ thấy mẫu mới.</p>` : ''}
+      <div class="row-flex" style="flex-wrap:wrap;gap:8px">${builtinBtns}${customBtns}</div>
+      ${opts.allowManage ? `<div class="row-flex" style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px">
+        <button id="hv-mau-add-btn">➕ Thêm mẫu mới vào thư viện</button>
+      </div>` : ''}
+    </div>`;
+  }
+  function bindHvMauLibrary(container, opts){
+    opts = opts || {};
+    const MAU_FN_MAP = { exportMauDonDeNghi, exportMauBanCamKet, exportMauSoYeuLyLich, exportMauPhieuTiepNhan, exportMauBanNhanXet, exportMauCongVanPhanCong, exportMauQuyetDinhPhanCongNguoiHuongDan, exportMauGiayGioiThieu, exportMauGiayXacNhanHoanThanh };
+    container.querySelectorAll('[data-mau]').forEach(btn=>{
+      const item = HV_MAU_LIBRARY.find(m=>m.key===btn.getAttribute('data-mau'));
+      if (item && !btn.disabled) btn.onclick = ()=> MAU_FN_MAP[item.fn]();
+    });
+    container.querySelectorAll('[data-mau-custom]').forEach(btn=>{
+      btn.onclick = ()=>{
+        const c = (state.customTemplates||[]).find(x=>x.id===btn.getAttribute('data-mau-custom'));
+        if (c) downloadCustomTemplate(c);
+      };
+    });
+    if (opts.allowManage){
+      container.querySelectorAll('[data-mau-toggle-hide]').forEach(btn=>{
+        btn.onclick = async ()=>{
+          const key = btn.getAttribute('data-mau-toggle-hide');
+          state.hiddenBuiltinMau = state.hiddenBuiltinMau || [];
+          if (state.hiddenBuiltinMau.includes(key)){
+            state.hiddenBuiltinMau = state.hiddenBuiltinMau.filter(k=>k!==key);
+          } else {
+            state.hiddenBuiltinMau.push(key);
+          }
+          await saveHiddenBuiltinMau();
+          render();
+        };
+      });
+      container.querySelectorAll('[data-mau-edit]').forEach(btn=>{
+        btn.onclick = ()=>{
+          const c = (state.customTemplates||[]).find(x=>x.id===btn.getAttribute('data-mau-edit'));
+          if (c) openReplaceCustomTemplateModal(c);
+        };
+      });
+      container.querySelectorAll('[data-mau-del]').forEach(btn=>{
+        btn.onclick = async ()=>{
+          if (!confirm('Xoá mẫu này khỏi thư viện? Học viên sẽ không còn tải được nữa.')) return;
+          state.customTemplates = (state.customTemplates||[]).filter(x=>x.id!==btn.getAttribute('data-mau-del'));
+          await saveCustomTemplates();
+          render();
+        };
+      });
+      const addBtn = container.querySelector('#hv-mau-add-btn');
+      if (addBtn) addBtn.onclick = openAddCustomTemplateModal;
     }
+  }
+
+  function openDocChecklistManagerModal(onChanged){
+    const overlay = el(`<div class="modal-overlay"><div class="modal" id="dcl-modal" style="max-width:720px">
+      <div class="row-flex" style="justify-content:space-between;align-items:center">
+        <h3 style="margin:0">⚙️ Quản lý danh mục giấy tờ hồ sơ học viên</h3>
+        <button type="button" class="secondary" id="dcl-fullscreen" title="Phóng to toàn bộ cửa sổ này cho dễ xem">⛶ Phóng to giao diện</button>
+      </div>
+      <p class="muted" style="margin-top:-6px">Danh mục này áp dụng chung cho TẤT CẢ học viên (hiện tại và sắp tới). Sửa/thêm/xoá ở đây sẽ tự động cập nhật vào bảng "Hồ sơ đính kèm" của mọi học viên.</p>
+      <div id="dcl-list"></div>
+      <div class="card" style="margin-top:14px;background:#f8f7f1">
+        <h3 style="font-size:14px">➕ Thêm loại giấy tờ mới</h3>
+        <div class="row-flex">
+          <div class="field" style="flex:3"><label>Tên giấy tờ</label><input id="dcl-new-ten" placeholder="VD: Giấy xác nhận kinh nghiệm công tác" /></div>
+          <div class="field"><label>Yêu cầu</label>
+            <select id="dcl-new-batbuoc">
+              <option value="1">Bắt buộc</option>
+              <option value="0">Nếu có</option>
+            </select>
+          </div>
+        </div>
+        <button id="dcl-add-btn">➕ Thêm vào danh mục</button>
+      </div>
+      <div class="row-flex" style="justify-content:flex-end;margin-top:14px">
+        <button id="dcl-close">Đóng</button>
+      </div>
+    </div></div>`);
+    root.appendChild(overlay);
+    let dclIsFull = false;
+    overlay.querySelector('#dcl-fullscreen').onclick = ()=>{
+      const modalEl = overlay.querySelector('#dcl-modal');
+      dclIsFull = !dclIsFull;
+      if (dclIsFull){
+        modalEl.style.maxWidth = '98vw'; modalEl.style.width = '98vw'; modalEl.style.maxHeight = '95vh';
+        overlay.querySelector('#dcl-fullscreen').textContent = '⛶ Thu nhỏ giao diện';
+      } else {
+        modalEl.style.maxWidth = '720px'; modalEl.style.width = ''; modalEl.style.maxHeight = '';
+        overlay.querySelector('#dcl-fullscreen').textContent = '⛶ Phóng to giao diện';
+      }
+    };
+    function refreshList(){
+      const wrap = overlay.querySelector('#dcl-list');
+      wrap.innerHTML = `
+        <div class="scroll-table-wrap">
+        <table>
+          <thead><tr><th>Tên giấy tờ</th><th>Yêu cầu</th><th></th></tr></thead>
+          <tbody>${state.docChecklist.map((d,idx)=>`
+            <tr>
+              <td><input type="text" data-dcl-ten="${idx}" value="${d.ten}" style="width:100%" /></td>
+              <td style="text-align:center">
+                <select data-dcl-batbuoc="${idx}">
+                  <option value="1" ${d.batBuoc?'selected':''}>Bắt buộc</option>
+                  <option value="0" ${!d.batBuoc?'selected':''}>Nếu có</option>
+                </select>
+              </td>
+              <td style="text-align:center"><button type="button" class="ghost small-btn" data-dcl-del="${idx}">🗑️ Xoá</button></td>
+            </tr>
+          `).join('')}</tbody>
+        </table>
+        </div>
+      `;
+      wrap.querySelectorAll('[data-dcl-ten]').forEach(inp=>{
+        inp.onchange = async ()=>{ state.docChecklist[Number(inp.getAttribute('data-dcl-ten'))].ten = inp.value.trim(); await saveDocChecklist(); onChanged && onChanged(); };
+      });
+      wrap.querySelectorAll('[data-dcl-batbuoc]').forEach(sel=>{
+        sel.onchange = async ()=>{ state.docChecklist[Number(sel.getAttribute('data-dcl-batbuoc'))].batBuoc = sel.value==='1'; await saveDocChecklist(); onChanged && onChanged(); };
+      });
+      wrap.querySelectorAll('[data-dcl-del]').forEach(btn=>{
+        btn.onclick = async ()=>{
+          if (!confirm('Xoá loại giấy tờ này khỏi danh mục chung? (Dữ liệu học viên đã nộp trước đó cho loại này sẽ vẫn được giữ lại trong hồ sơ của họ, chỉ không còn hiện trong danh mục yêu cầu mới.)')) return;
+          state.docChecklist.splice(Number(btn.getAttribute('data-dcl-del')), 1);
+          await saveDocChecklist();
+          refreshList();
+          onChanged && onChanged();
+        };
+      });
+    }
+    refreshList();
+    overlay.querySelector('#dcl-add-btn').onclick = async ()=>{
+      const ten = overlay.querySelector('#dcl-new-ten').value.trim();
+      if (!ten){ showToast('Vui lòng nhập tên giấy tờ.'); return; }
+      const batBuoc = overlay.querySelector('#dcl-new-batbuoc').value === '1';
+      state.docChecklist.push({ key: uid('doc'), ten, batBuoc });
+      await saveDocChecklist();
+      overlay.querySelector('#dcl-new-ten').value = '';
+      refreshList();
+      onChanged && onChanged();
+    };
+    overlay.querySelector('#dcl-close').onclick = ()=>{ overlay.remove(); onChanged && onChanged(); };
+  }
+  function ensureTraineeDocs(t){
+    const master = (state.docChecklist && state.docChecklist.length) ? state.docChecklist : DOC_CHECKLIST_HV;
+    if (!t.hoSoDinhKem || !t.hoSoDinhKem.length){
+      t.hoSoDinhKem = master.map(d=>({ key:d.key, ten:d.ten, batBuoc:d.batBuoc, trangThai:'Chưa nộp', ngayNop:'', ghiChu:'' }));
+      return t.hoSoDinhKem;
+    }
+    // Đồng bộ: cập nhật tên/bắt buộc theo danh mục mới nhất, và bổ sung loại giấy tờ mới thêm vào danh mục
+    // (không xoá các mục đã có dữ liệu của học viên dù danh mục có bỏ bớt, để không mất dữ liệu đã ghi nhận).
+    master.forEach(md=>{
+      const existing = t.hoSoDinhKem.find(d=>d.key===md.key);
+      if (existing){
+        existing.ten = md.ten;
+        existing.batBuoc = md.batBuoc;
+      } else {
+        t.hoSoDinhKem.push({ key:md.key, ten:md.ten, batBuoc:md.batBuoc, trangThai:'Chưa nộp', ngayNop:'', ghiChu:'' });
+      }
+    });
     return t.hoSoDinhKem;
+  }
+  // ---- Trợ lý kiểm tra hồ sơ tự động ----
+  function hvAutoCheckErrors(t){
+    const errs = [];
+    if (!t.hoTen) errs.push('Chưa nhập họ và tên.');
+    if (!t.ngaySinh) errs.push('Chưa nhập ngày sinh.');
+    else {
+      const age = (Date.now() - new Date(t.ngaySinh).getTime()) / (365.25*86400000);
+      if (age < 18 || age > 70) errs.push('Tuổi tính theo ngày sinh bất thường (dưới 18 hoặc trên 70) — kiểm tra lại ngày sinh.');
+    }
+    const cccdDigits = (t.cccd||'').replace(/\D/g,'');
+    if (!cccdDigits) errs.push('Chưa nhập số CCCD/CMND.');
+    else if (cccdDigits.length !== 9 && cccdDigits.length !== 12) errs.push('Số CCCD/CMND có '+cccdDigits.length+' chữ số, khác 9 (CMND) hoặc 12 (CCCD) — kiểm tra lại.');
+    if (!t.donViCuTri) errs.push('Chưa nhập đơn vị/trường cử đi.');
+    if (!t.soThangDangKy) errs.push('Chưa nhập số tháng đăng ký thực hành mong muốn.');
+    if (t.tuNgayDeNghi && t.denNgayDeNghi && t.denNgayDeNghi < t.tuNgayDeNghi) errs.push('"Đến ngày" đang sớm hơn "Từ ngày" — báo Phòng Chỉ đạo tuyến kiểm tra lại thời gian tổ chức.');
+    const docs = ensureTraineeDocs(t);
+    const donDeNghi = docs.find(d=>d.key==='donDeNghi');
+    if (donDeNghi && !docHasFiles(donDeNghi)) errs.push('Chưa đính kèm file Đơn đề nghị thực hành có chữ ký của học viên.');
+    const s = traineeDocsSummary(t);
+    if (s.missing > 0) errs.push('Còn thiếu '+s.missing+' giấy tờ bắt buộc: '+s.missingNames.join('; ')+'.');
+    const blurryDocs = docs.filter(d=>docHasBlurryFile(d)).map(d=>d.ten);
+    if (blurryDocs.length) errs.push('Ảnh đính kèm có thể bị mờ, nên chụp lại rõ hơn: '+blurryDocs.join('; ')+'.');
+    return errs;
+  }
+  function openSignaturePadModal(title, onSave){
+    const overlay = el(`<div class="modal-overlay"><div class="modal" style="max-width:520px">
+      <h3>✍️ ${title||'Ký xác nhận'}</h3>
+      <p class="muted" style="margin-top:-6px">Dùng chuột (máy tính) hoặc ngón tay/bút cảm ứng (điện thoại, máy tính bảng) để ký trực tiếp vào khung bên dưới.</p>
+      <div style="border:1.5px dashed #999;border-radius:8px;background:#fff;touch-action:none">
+        <canvas id="sig-canvas" width="460" height="200" style="width:100%;display:block;cursor:crosshair"></canvas>
+      </div>
+      <div class="row-flex" style="justify-content:space-between;margin-top:10px">
+        <button type="button" class="secondary" id="sig-clear">🗑️ Xoá, ký lại</button>
+        <div class="row-flex">
+          <button type="button" class="secondary" id="sig-cancel">Huỷ</button>
+          <button type="button" id="sig-save">💾 Lưu chữ ký</button>
+        </div>
+      </div>
+    </div></div>`);
+    root.appendChild(overlay);
+    const canvas = overlay.querySelector('#sig-canvas');
+    const ctx = canvas.getContext('2d');
+    ctx.lineWidth = 2.2; ctx.lineCap = 'round'; ctx.strokeStyle = '#14335c';
+    let drawing = false, hasDrawn = false;
+    function getPos(e){
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
+    }
+    function start(e){ e.preventDefault(); drawing = true; hasDrawn = true; const p = getPos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); }
+    function move(e){ if (!drawing) return; e.preventDefault(); const p = getPos(e); ctx.lineTo(p.x, p.y); ctx.stroke(); }
+    function end(){ drawing = false; }
+    canvas.addEventListener('mousedown', start);
+    canvas.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', end);
+    canvas.addEventListener('touchstart', start, { passive:false });
+    canvas.addEventListener('touchmove', move, { passive:false });
+    canvas.addEventListener('touchend', end);
+    overlay.querySelector('#sig-clear').onclick = ()=>{ ctx.clearRect(0,0,canvas.width,canvas.height); hasDrawn = false; };
+    overlay.querySelector('#sig-cancel').onclick = ()=> overlay.remove();
+    overlay.querySelector('#sig-save').onclick = ()=>{
+      if (!hasDrawn){ alert('Vui lòng ký vào khung trước khi lưu.'); return; }
+      const dataUrl = canvas.toDataURL('image/png');
+      overlay.remove();
+      onSave(dataUrl);
+    };
+  }
+  function openImageZoomModal(dataUrl, title){
+    const overlay = el(`<div class="modal-overlay" style="background:rgba(0,0,0,0.85)"><div class="modal" style="max-width:95vw;max-height:95vh;padding:12px;background:transparent;box-shadow:none">
+      <div class="row-flex" style="justify-content:space-between;align-items:center;margin-bottom:8px">
+        <b style="color:#fff">${title||'Xem ảnh phóng to'}</b>
+        <button class="secondary" id="zoom-close">✕ Đóng</button>
+      </div>
+      <div style="text-align:center;max-height:85vh;overflow:auto">
+        <img src="${dataUrl}" style="max-width:100%;border-radius:6px" />
+      </div>
+    </div></div>`);
+    root.appendChild(overlay);
+    overlay.querySelector('#zoom-close').onclick = ()=> overlay.remove();
+    overlay.onclick = (e)=>{ if (e.target === overlay) overlay.remove(); };
+  }
+  // ---- Di trú: 1 giấy tờ có thể có NHIỀU file đính kèm (files[]), tương thích ngược với field cũ (fileDataUrl...) ----
+  function ensureDocFiles(doc){
+    if (!doc.files){
+      doc.files = [];
+      if (doc.fileDataUrl) doc.files.push({ id: uid('f'), kind:'file', dataUrl: doc.fileDataUrl, type: doc.fileType, name: doc.fileName, isBlurry: !!doc.fileIsBlurry });
+      if (doc.fileLink) doc.files.push({ id: uid('f'), kind:'link', url: doc.fileLink });
+    }
+    return doc.files;
+  }
+  function docHasFiles(doc){ return !!(doc.files && doc.files.length) || !!doc.fileDataUrl || !!doc.fileLink; }
+  function docHasBlurryFile(doc){ return (doc.files||[]).some(f=>f.isBlurry) || !!doc.fileIsBlurry; }
+  function quickZoomDoc(t, doc){
+    const files = ensureDocFiles(doc);
+    if (!files.length) return;
+    if (files.length === 1 && files[0].kind === 'file' && files[0].type === 'image'){
+      openImageZoomModal(files[0].dataUrl, doc.ten);
+      return;
+    }
+    if (files.length === 1 && files[0].kind === 'link'){
+      window.open(files[0].url, '_blank');
+      return;
+    }
+    // Nhiều file hoặc file không phải ảnh (PDF/khác) -> mở thư viện xem đầy đủ, có phóng to từng ảnh bên trong
+    openDocAttachModal(t, doc, null, { readOnly: true });
+  }
+  function openDocAttachModal(t, doc, onSaved, opts){
+    opts = opts || {};
+    const readOnly = !!opts.readOnly;
+    const files = ensureDocFiles(doc);
+    const overlay = el(`<div class="modal-overlay"><div class="modal" id="da-modal" style="max-width:560px">
+      <div class="row-flex" style="justify-content:space-between;align-items:center">
+        <h3 style="margin:0">📎 ${doc.ten}</h3>
+        <button type="button" class="secondary" id="da-fullscreen" title="Phóng to toàn bộ cửa sổ này cho dễ xem">⛶ Phóng to giao diện</button>
+      </div>
+      ${readOnly
+        ? `<div class="card" style="background:var(--amber-bg);border-color:var(--amber);margin-bottom:12px"><b>Hồ sơ đã được Phòng Chỉ đạo tuyến duyệt.</b> Học viên chỉ có thể xem lại, mọi chỉnh sửa/đính kèm từ đây trở đi do Phòng Chỉ đạo tuyến thực hiện.</div>`
+        : `<p class="muted" style="margin-top:-6px">Có thể đính kèm NHIỀU file cùng lúc (chụp nhiều ảnh, chọn nhiều file, hoặc dán nhiều link).</p>
+           <p class="muted" style="margin-top:-4px;font-style:italic">💡 Mẹo chụp/scan chuẩn: đủ ánh sáng, chụp thẳng góc, lấy đủ 4 cạnh giấy, không mờ/loá — để dễ đối chiếu và nhận dạng.</p>`}
+      <div id="da-current" style="margin-bottom:8px"></div>
+      ${!readOnly ? `
+      <div class="row-flex" style="margin-bottom:10px">
+        <button type="button" class="secondary" id="da-tool-camera">📷 Chụp ảnh</button>
+        <button type="button" class="secondary" id="da-tool-file">🖼️ Chọn ảnh/file (nhiều)</button>
+        <button type="button" class="secondary" id="da-tool-link">🔗 Dán link</button>
+      </div>
+      <input type="file" id="da-file-camera" accept="image/*" capture="environment" style="display:none" />
+      <input type="file" id="da-file-picker" accept="image/*,.pdf" multiple style="display:none" />
+      <div id="da-link-block" style="display:none">
+        <div class="row-flex">
+          <input id="da-link" type="text" placeholder="VD: https://drive.google.com/..." style="flex:3" />
+          <button type="button" class="secondary" id="da-link-add" style="flex:1">➕ Thêm link</button>
+        </div>
+      </div>
+      <div id="da-file-preview" style="margin-top:8px"></div>` : ''}
+      <div class="row-flex" style="justify-content:flex-end;margin-top:14px">
+        <button class="secondary" id="da-cancel">${readOnly ? 'Đóng' : 'Huỷ'}</button>
+        ${!readOnly ? `<button id="da-save">💾 Lưu</button>` : ''}
+      </div>
+    </div></div>`);
+    root.appendChild(overlay);
+    let daIsFull = false;
+    overlay.querySelector('#da-fullscreen').onclick = ()=>{
+      const modalEl = overlay.querySelector('#da-modal');
+      daIsFull = !daIsFull;
+      if (daIsFull){
+        modalEl.style.maxWidth = '98vw';
+        modalEl.style.width = '98vw';
+        modalEl.style.maxHeight = '95vh';
+        overlay.querySelector('#da-fullscreen').textContent = '⛶ Thu nhỏ giao diện';
+      } else {
+        modalEl.style.maxWidth = '560px';
+        modalEl.style.width = '';
+        modalEl.style.maxHeight = '';
+        overlay.querySelector('#da-fullscreen').textContent = '⛶ Phóng to giao diện';
+      }
+    };
+    function renderCurrent(){
+      const box = overlay.querySelector('#da-current');
+      if (!files.length){ box.innerHTML = '<span class="muted">Chưa đính kèm file nào.</span>'; return; }
+      box.innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:10px">${files.map((f,idx)=>{
+        if (f.kind === 'link'){
+          return `<div style="border:1px solid var(--line);border-radius:6px;padding:8px;max-width:200px">
+            <a href="${f.url}" target="_blank" rel="noopener" style="word-break:break-all;font-size:12.5px">🔗 ${f.url}</a>
+            ${!readOnly ? `<br><button type="button" class="ghost small-btn" data-frm="${idx}" style="margin-top:4px">🗑️ Xoá</button>` : ''}
+          </div>`;
+        }
+        if (f.type === 'image'){
+          return `<div style="border:1px solid var(--line);border-radius:6px;padding:6px;text-align:center">
+            <img data-fzoom="${idx}" src="${f.dataUrl}" style="max-height:110px;max-width:150px;border-radius:4px;cursor:zoom-in;display:block" />
+            ${f.isBlurry ? '<div style="color:var(--amber);font-size:11px;margin-top:4px">⚠ Có thể mờ</div>' : ''}
+            <div class="row-flex" style="margin-top:4px;justify-content:center">
+              <button type="button" class="ghost small-btn" data-fzoom="${idx}">🔍</button>
+              ${!readOnly ? `<button type="button" class="ghost small-btn" data-frm="${idx}">🗑️</button>` : ''}
+            </div>
+          </div>`;
+        }
+        return `<div style="border:1px solid var(--line);border-radius:6px;padding:8px">
+          <span class="pill gray">📄 ${f.name||'File'}</span>
+          ${!readOnly ? `<br><button type="button" class="ghost small-btn" data-frm="${idx}" style="margin-top:4px">🗑️ Xoá</button>` : ''}
+        </div>`;
+      }).join('')}</div>`;
+      box.querySelectorAll('[data-fzoom]').forEach(el2=>{
+        el2.onclick = ()=>{ const f = files[Number(el2.getAttribute('data-fzoom'))]; openImageZoomModal(f.dataUrl, doc.ten); };
+      });
+      if (!readOnly){
+        box.querySelectorAll('[data-frm]').forEach(btn=>{
+          btn.onclick = ()=>{ files.splice(Number(btn.getAttribute('data-frm')), 1); renderCurrent(); };
+        });
+      }
+    }
+    renderCurrent();
+    if (!readOnly){
+      overlay.querySelector('#da-tool-camera').onclick = ()=> overlay.querySelector('#da-file-camera').click();
+      overlay.querySelector('#da-tool-file').onclick = ()=> overlay.querySelector('#da-file-picker').click();
+      overlay.querySelector('#da-tool-link').onclick = ()=>{
+        const block = overlay.querySelector('#da-link-block');
+        block.style.display = block.style.display === 'none' ? 'block' : 'none';
+        if (block.style.display === 'block') overlay.querySelector('#da-link').focus();
+      };
+      overlay.querySelector('#da-link-add').onclick = ()=>{
+        const url = overlay.querySelector('#da-link').value.trim();
+        if (!url){ showToast('Vui lòng nhập link.'); return; }
+        files.push({ id: uid('f'), kind:'link', url });
+        overlay.querySelector('#da-link').value = '';
+        renderCurrent();
+      };
+      async function handleFiles(e){
+        const selected = Array.from(e.target.files || []);
+        const preview = overlay.querySelector('#da-file-preview');
+        if (!selected.length) return;
+        for (const file of selected){
+          preview.innerHTML = `<span class="muted">Đang xử lý ${file.name}…</span>`;
+          try {
+            const f = await readFileAsCompressedDataURL(file);
+            files.push({ id: uid('f'), kind:'file', dataUrl: f.dataUrl, type: f.type, name: f.name, isBlurry: !!f.isBlurry });
+          } catch(err){
+            preview.innerHTML = `<div style="color:var(--red);font-size:13px">⚠ ${file.name}: ${err.message}</div>`;
+          }
+        }
+        preview.innerHTML = '';
+        renderCurrent();
+        e.target.value = '';
+      }
+      overlay.querySelector('#da-file-camera').onchange = handleFiles;
+      overlay.querySelector('#da-file-picker').onchange = handleFiles;
+      overlay.querySelector('#da-save').onclick = async ()=>{
+        doc.files = files;
+        const firstFile = files.find(f=>f.kind==='file');
+        const firstLink = files.find(f=>f.kind==='link');
+        doc.fileDataUrl = firstFile ? firstFile.dataUrl : '';
+        doc.fileType = firstFile ? firstFile.type : '';
+        doc.fileName = firstFile ? firstFile.name : '';
+        doc.fileIsBlurry = firstFile ? !!firstFile.isBlurry : false;
+        doc.fileLink = firstLink ? firstLink.url : '';
+        if (files.length) doc.trangThai = 'Đã nộp';
+        await saveTrainee(t);
+        overlay.remove();
+        onSaved && onSaved();
+      };
+    }
+    overlay.querySelector('#da-cancel').onclick = ()=> overlay.remove();
   }
   function traineeDocsSummary(t){
     const docs = ensureTraineeDocs(t);
@@ -3609,19 +5220,21 @@
   }
 
   function renderTraineeListView(content){
+    if (!state._hvFilter) state._hvFilter = { q:'', trangThai:'', pheDuyet:'' };
+    const fv = state._hvFilter;
     content.innerHTML = `
       <div class="card">
         <h3>🎓 Học viên thực hành để cấp Giấy phép hành nghề</h3>
         <p class="muted" style="margin-top:-6px">Quản lý tiếp nhận hồ sơ, phân khoa thực hành, theo dõi tiến độ, đánh giá kết quả và xác nhận hoàn thành thực hành cho các trường hợp đề nghị thực hành khám bệnh, chữa bệnh theo quy định (Luật Khám bệnh, chữa bệnh 2023).</p>
         <div class="search-row">
-          <input id="hv-search" placeholder="🔎 Tìm theo họ tên hoặc đơn vị/trường cử đi..." />
+          <input id="hv-search" placeholder="🔎 Tìm theo họ tên hoặc đơn vị/trường cử đi..." value="${fv.q||''}" />
           <select id="hv-filter-trangthai">
             <option value="">— Tất cả trạng thái thực hành —</option>
-            ${TRANG_THAI_TONG_THE_HV.map(s=>`<option value="${s}">${s}</option>`).join('')}
+            ${TRANG_THAI_TONG_THE_HV.map(s=>`<option value="${s}" ${s===fv.trangThai?'selected':''}>${s}</option>`).join('')}
           </select>
           <select id="hv-filter-pheduyet">
             <option value="">— Tất cả trạng thái phê duyệt —</option>
-            ${TRANG_THAI_PHE_DUYET_HV.map(s=>`<option value="${s}">${s}</option>`).join('')}
+            ${TRANG_THAI_PHE_DUYET_HV.map(s=>`<option value="${s}" ${s===fv.pheDuyet?'selected':''}>${s}</option>`).join('')}
           </select>
         </div>
         <div class="row-flex" style="margin-bottom:14px">
@@ -3631,11 +5244,12 @@
         </div>
         <div id="hv-table-wrap"></div>
       </div>
+      ${renderHvMauLibraryHtml({ allowManage: true })}
     `;
     function getFilteredList(){
-      const q = document.getElementById('hv-search').value.trim().toLowerCase();
-      const fTrang = document.getElementById('hv-filter-trangthai').value;
-      const fPhe = document.getElementById('hv-filter-pheduyet').value;
+      const q = (fv.q||'').trim().toLowerCase();
+      const fTrang = fv.trangThai||'';
+      const fPhe = fv.pheDuyet||'';
       let list = state.trainees.filter(t=>{
         if (q && !(((t.hoTen||'').toLowerCase().includes(q)) || ((t.donViCuTri||'').toLowerCase().includes(q)))) return false;
         if (fTrang && (t.trangThaiTongThe||'Chưa bắt đầu') !== fTrang) return false;
@@ -3652,10 +5266,11 @@
           curStage ? curStage.khoa : 'Chưa phân khoa',
           fmtDateRange(t.tuNgayDeNghi, t.denNgayDeNghi),
           t.trangThaiPheDuyet||'Chờ phê duyệt', t.trangThaiTongThe||'Chưa bắt đầu',
+          t.soHopDongTH||'—', t.daDongPhiTH ? 'Đã đóng' : 'Chưa đóng',
         ];
       });
     }
-    const EXPORT_HEADERS = ['STT','Họ và tên','Ngày sinh','Chức danh đăng ký','Đơn vị/trường cử đi','Khoa thực hành hiện tại','Thời gian đề nghị','Trạng thái phê duyệt','Trạng thái thực hành'];
+    const EXPORT_HEADERS = ['STT','Họ và tên','Ngày sinh','Chức danh đăng ký','Đơn vị/trường cử đi','Khoa thực hành hiện tại','Thời gian đề nghị','Trạng thái phê duyệt','Trạng thái thực hành','Số HĐ thực hành','Phí thực hành'];
     function refreshTable(){
       const list = getFilteredList();
       const wrap = document.getElementById('hv-table-wrap');
@@ -3663,19 +5278,21 @@
         <div class="scroll-table-wrap">
         <table style="width:auto;min-width:1300px;table-layout:auto">
           <thead><tr>
-            <th style="white-space:nowrap">STT</th><th style="white-space:nowrap">Họ tên</th><th style="white-space:nowrap">Chức danh đăng ký</th><th style="white-space:nowrap">Đơn vị/trường cử đi</th><th style="white-space:nowrap">Khoa thực hành hiện tại</th>
-            <th style="white-space:nowrap">Thời gian đề nghị</th><th style="white-space:nowrap">Hồ sơ đính kèm</th><th style="white-space:nowrap">Phê duyệt</th><th style="white-space:nowrap">Trạng thái thực hành</th><th></th>
+            <th style="white-space:nowrap">STT</th><th style="white-space:nowrap">Mã hồ sơ</th><th style="white-space:nowrap">Họ tên</th><th style="white-space:nowrap">Chức danh đăng ký</th><th style="white-space:nowrap">Đơn vị/trường cử đi</th><th style="white-space:nowrap">Khoa thực hành hiện tại</th>
+            <th style="white-space:nowrap">Thời gian đề nghị</th><th style="white-space:nowrap">Hồ sơ đính kèm</th><th style="white-space:nowrap">HĐ thực hành / Phí</th><th style="white-space:nowrap">Phê duyệt</th><th style="white-space:nowrap">Trạng thái thực hành</th><th></th>
           </tr></thead>
           <tbody>${list.map((t,i)=>{
             const curStage = getCurrentStage(t);
             return `<tr>
               <td style="white-space:nowrap;text-align:center">${i+1}</td>
+              <td style="white-space:nowrap">${t.maHoSo||'—'}${!t.daNopHoSo ? ' <span class="pill gray">Đang khai báo</span>' : ''}</td>
               <td style="white-space:nowrap">${t.hoTen||''}</td>
               <td style="white-space:nowrap">${t.chucDanhDangKy||''}</td>
               <td style="white-space:nowrap">${t.donViCuTri||''}</td>
               <td style="white-space:nowrap">${curStageLabel(curStage)}</td>
               <td style="white-space:nowrap">${fmtDateRange(t.tuNgayDeNghi, t.denNgayDeNghi)}</td>
-              <td style="white-space:nowrap">${pillHoSoDinhKem(t)}</td>
+              <td style="white-space:nowrap;cursor:pointer" data-docs-hv="${t.id}" title="Bấm để xem/bổ sung hồ sơ đính kèm">${pillHoSoDinhKem(t)}</td>
+              <td style="white-space:nowrap">${t.soHopDongTH ? '<span class="pill '+(t.daDongPhiTH?'green':'amber')+'">'+(t.daDongPhiTH?'Đã ký/đóng phí':'Đã ký, chưa đóng phí')+'</span>' : '<span class="pill gray">Chưa có HĐ</span>'}</td>
               <td style="white-space:nowrap">${pillPheDuyetHV(t.trangThaiPheDuyet)}</td>
               <td style="white-space:nowrap">${pillTongTheHV(t.trangThaiTongThe)}</td>
               <td style="white-space:nowrap">
@@ -3687,7 +5304,7 @@
                 <button class="ghost small-btn" data-del-hv="${t.id}">🗑️</button>
               </td>
             </tr>`;
-          }).join('') || `<tr><td colspan="10" style="text-align:center">Chưa có học viên nào. Bấm "Tiếp nhận học viên mới" để bắt đầu.</td></tr>`}</tbody>
+          }).join('') || `<tr><td colspan="12" style="text-align:center">Chưa có học viên nào. Bấm "Tiếp nhận học viên mới" để bắt đầu.</td></tr>`}</tbody>
         </table>
         </div>
       `;
@@ -3709,20 +5326,22 @@
       wrap.querySelectorAll('[data-del-hv]').forEach(b=>{
         b.onclick = async ()=>{
           if (!confirm('Xoá hồ sơ học viên này? Hành động này không thể hoàn tác.')) return;
-          state.trainees = state.trainees.filter(x=>x.id!==b.getAttribute('data-del-hv'));
-          await saveTrainees();
+          const delId = b.getAttribute('data-del-hv');
+          state.trainees = state.trainees.filter(x=>x.id!==delId);
+          await deleteTraineeStorage(delId);
           refreshTable();
         };
       });
     }
-    document.getElementById('hv-search').oninput = refreshTable;
-    document.getElementById('hv-filter-trangthai').onchange = refreshTable;
-    document.getElementById('hv-filter-pheduyet').onchange = refreshTable;
+    document.getElementById('hv-search').oninput = (e)=>{ fv.q = e.target.value; refreshTable(); };
+    document.getElementById('hv-filter-trangthai').onchange = (e)=>{ fv.trangThai = e.target.value; refreshTable(); };
+    document.getElementById('hv-filter-pheduyet').onchange = (e)=>{ fv.pheDuyet = e.target.value; refreshTable(); };
     document.getElementById('hv-add').onclick = ()=> openTraineeFormModal(null);
+    bindHvMauLibrary(content, { allowManage: true });
     document.getElementById('hv-export-word').onclick = ()=>{
       const list = getFilteredList();
       if (!list.length){ alert('Không có dữ liệu để xuất.'); return; }
-      exportWordTable('Danh sách học viên thực hành cấp Giấy phép hành nghề', EXPORT_HEADERS, buildExportRows(list), 'danh_sach_hoc_vien_thuc_hanh_'+todayISO()+'.doc', { trichYeu: '(Phòng Chỉ đạo tuyến)', landscape: true, colWidths: [4,12,8,10,12,14,14,13,13] });
+      exportWordTable('Danh sách học viên thực hành cấp Giấy phép hành nghề', EXPORT_HEADERS, buildExportRows(list), 'danh_sach_hoc_vien_thuc_hanh_'+todayISO()+'.doc', { trichYeu: '(Phòng Chỉ đạo tuyến)', landscape: true, colWidths: [4,10,7,9,10,12,12,11,11,10,8] });
     };
     document.getElementById('hv-export-excel').onclick = ()=>{
       const list = getFilteredList();
@@ -3732,6 +5351,29 @@
     refreshTable();
   }
 
+  function traineeQuickNavHtml(t){
+    return `<div class="row-flex" style="flex-wrap:wrap;gap:6px;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--line);align-items:center">
+      <span class="muted">Đang thao tác hồ sơ: <b>${t.hoTen||t.maHoSo||''}</b> —</span>
+      <button type="button" class="ghost small-btn" data-qn="sua">✏️ Sửa hồ sơ</button>
+      <button type="button" class="ghost small-btn" data-qn="hoso">📋 Hồ sơ</button>
+      <button type="button" class="ghost small-btn" data-qn="phankhoa">🏥 Phân khoa</button>
+      <button type="button" class="ghost small-btn" data-qn="quyetdinh">📜 Quyết định</button>
+      <button type="button" class="ghost small-btn" data-qn="xacnhan">📜 Xác nhận</button>
+    </div>`;
+  }
+  function bindTraineeQuickNav(overlay, t){
+    overlay.querySelectorAll('[data-qn]').forEach(btn=>{
+      btn.onclick = ()=>{
+        const action = btn.getAttribute('data-qn');
+        overlay.remove();
+        if (action==='sua') openTraineeFormModal(t);
+        if (action==='hoso') openTraineeDocsModal(t.id);
+        if (action==='phankhoa') openTraineeStagesModal(t.id);
+        if (action==='quyetdinh') openDecisionModal(t.id);
+        if (action==='xacnhan') openTraineeConfirmModal(t.id);
+      };
+    });
+  }
   function openTraineeFormModal(t){
     const isEdit = !!t;
     const v = t || {
@@ -3741,13 +5383,25 @@
       trangThaiHoSo: TRANG_THAI_HO_SO_HV[0], trangThaiPheDuyet: TRANG_THAI_PHE_DUYET_HV[0],
       ngayTiepNhan:'', soVanBanTiepNhan:'',
     };
-    const overlay = el(`<div class="modal-overlay"><div class="modal" style="max-width:680px">
-      <h3>${isEdit ? 'Sửa hồ sơ học viên' : 'Tiếp nhận học viên thực hành mới'}</h3>
+    const overlay = el(`<div class="modal-overlay"><div class="modal" id="hv-form-modal" style="max-width:680px">
+      <div class="row-flex" style="justify-content:space-between;align-items:center">
+        <h3 style="margin:0">${isEdit ? 'Sửa hồ sơ học viên' : 'Tiếp nhận học viên thực hành mới'}</h3>
+        <button type="button" class="secondary" id="hv-form-fullscreen" title="Phóng to toàn bộ cửa sổ này cho dễ xem">⛶ Phóng to giao diện</button>
+      </div>
+      ${isEdit ? traineeQuickNavHtml(t) : ''}
       <div class="row-flex">
         <div class="field"><label>Họ và tên *</label><input id="hv-hoTen" value="${v.hoTen||''}" /></div>
         <div class="field"><label>Ngày sinh</label><input id="hv-ngaySinh" type="date" value="${v.ngaySinh||''}" /></div>
-        <div class="field"><label>Số CCCD</label><input id="hv-cccd" value="${v.cccd||''}" /></div>
+        <div class="field"><label>Số CCCD</label><input id="hv-cccd" value="${v.cccd||''}" inputmode="numeric" placeholder="Chỉ nhập số" /></div>
       </div>
+      <div class="row-flex">
+        <div class="field"><label>Ngày cấp CCCD</label><input id="hv-ngayCapCccd" type="date" value="${v.ngayCapCccd||''}" /></div>
+        <div class="field"><label>Nơi cấp CCCD</label><input id="hv-noiCapCccd" value="${v.noiCapCccd||''}" placeholder="VD: Cục Cảnh sát QLHC về TTXH" /></div>
+      </div>
+      ${isEdit ? `<div class="card" style="background:#f8f7f1;margin-bottom:8px">
+        <b>🔑 Mã xác nhận đăng nhập:</b> ${v.pin ? 'Học viên đã tự đặt mã riêng (khác mặc định).' : 'Đang dùng mặc định — 4 số cuối CCCD.'}
+        ${v.pin ? '<button type="button" class="secondary" id="hv-reset-pin-btn" style="margin-left:10px">🔄 Đặt lại về mặc định (4 số cuối CCCD)</button>' : ''}
+      </div>` : ''}
       <div class="row-flex">
         <div class="field"><label>Chức danh đăng ký thực hành</label>
           <select id="hv-chucDanh">${CHUC_DANH.map(c=>`<option value="${c}" ${c===v.chucDanhDangKy?'selected':''}>${c}</option>`).join('')}</select>
@@ -3764,8 +5418,9 @@
         <div class="field" style="flex:2"><label>Mục đích thực hành</label><input id="hv-mucDich" value="${v.mucDichThucHanh||''}" /></div>
       </div>
       <div class="row-flex">
-        <div class="field"><label>Thời gian đề nghị — Từ ngày</label><input id="hv-tuNgay" type="date" value="${v.tuNgayDeNghi||''}" /></div>
-        <div class="field"><label>Thời gian đề nghị — Đến ngày</label><input id="hv-denNgay" type="date" value="${v.denNgayDeNghi||''}" /></div>
+        <div class="field"><label>Số tháng đăng ký thực hành <span class="muted" style="font-weight:normal">(học viên mong muốn)</span></label><input id="hv-soThang" type="number" min="0" step="0.5" value="${v.soThangDangKy||''}" placeholder="VD: 12" /></div>
+        <div class="field"><label>Từ ngày <span class="muted" style="font-weight:normal">(Phòng CĐT xếp lịch)</span></label><input id="hv-tuNgay" type="date" value="${v.tuNgayDeNghi||''}" /></div>
+        <div class="field"><label>Đến ngày <span class="muted" style="font-weight:normal">(tự tính theo số tháng)</span></label><input id="hv-denNgay" type="date" value="${v.denNgayDeNghi||''}" /></div>
       </div>
       <div class="row-flex">
         <div class="field"><label>Người liên hệ</label><input id="hv-nguoiLienHe" value="${v.nguoiLienHe||''}" /></div>
@@ -3781,29 +5436,88 @@
       </div>
       <div class="row-flex">
         <div class="field"><label>Ngày tiếp nhận (nếu đã đồng ý)</label><input id="hv-ngayTiepNhan" type="date" value="${v.ngayTiepNhan||''}" /></div>
-        <div class="field" style="flex:2"><label>Số văn bản / quyết định tiếp nhận</label><input id="hv-soVanBan" value="${v.soVanBanTiepNhan||''}" /></div>
+        <div class="field" style="flex:2"><label>Số văn bản / quyết định tiếp nhận</label><input id="hv-soVanBan" value="${v.soVanBanTiepNhan||''}" placeholder="Có thể để trống, bổ sung khi có số chính thức" /></div>
       </div>
       <div class="field"><label>Ghi chú hồ sơ</label><textarea id="hv-ghiChu" rows="2">${v.ghiChuHoSo||''}</textarea></div>
+
+      <h3 style="font-size:14px;margin-top:14px;border-top:1px solid var(--line);padding-top:12px">📄 Hợp đồng thực hành & phí thực hành <span class="muted" style="font-weight:normal">(Bước 4, QT.01.CĐT)</span></h3>
+      <p class="muted" style="margin-top:-8px">Thông tin do Phòng Tổ chức cán bộ/Tài chính kế toán cập nhật sau khi ký hợp đồng và thu phí. Có thể để trống ở bước tiếp nhận ban đầu và bổ sung sau.</p>
+      <div class="row-flex">
+        <div class="field"><label>Số hợp đồng thực hành</label><input id="hv-soHopDong" value="${v.soHopDongTH||''}" placeholder="VD: 25/HĐTH-BVĐKT" /></div>
+        <div class="field"><label>Ngày ký hợp đồng</label><input id="hv-ngayKyHopDong" type="date" value="${v.ngayKyHopDongTH||''}" /></div>
+      </div>
+      <div class="row-flex">
+        <div class="field">
+          <label>Đã đóng phí thực hành tại P.TCKT?</label>
+          <select id="hv-daDongPhi">
+            <option value="0" ${!v.daDongPhiTH?'selected':''}>Chưa đóng</option>
+            <option value="1" ${v.daDongPhiTH?'selected':''}>Đã đóng đủ</option>
+          </select>
+        </div>
+        <div class="field"><label>Ngày đóng phí</label><input id="hv-ngayDongPhi" type="date" value="${v.ngayDongPhiTH||''}" /></div>
+        <div class="field"><label>Số tiền / biên lai (nếu có)</label><input id="hv-soTienPhi" value="${v.soTienPhiTH||''}" /></div>
+      </div>
+
       <div class="row-flex" style="justify-content:flex-end;margin-top:10px">
         <button class="secondary" id="hv-cancel">Hủy</button>
         <button id="hv-save">Lưu hồ sơ</button>
       </div>
     </div></div>`);
     root.appendChild(overlay);
+    if (isEdit) bindTraineeQuickNav(overlay, t);
+    const resetPinBtn = overlay.querySelector('#hv-reset-pin-btn');
+    if (resetPinBtn) resetPinBtn.onclick = async ()=>{
+      if (!confirm('Đặt lại mã xác nhận của học viên này về mặc định (4 số cuối CCCD)? Học viên sẽ cần dùng mã mới này để đăng nhập lại.')) return;
+      delete t.pin;
+      await saveTrainee(t);
+      showToast('Đã đặt lại mã xác nhận về mặc định (4 số cuối CCCD).');
+      overlay.remove();
+      openTraineeFormModal(t);
+    };
+    let hvFormIsFull = false;
+    overlay.querySelector('#hv-form-fullscreen').onclick = ()=>{
+      const modalEl = overlay.querySelector('#hv-form-modal');
+      hvFormIsFull = !hvFormIsFull;
+      if (hvFormIsFull){
+        modalEl.style.maxWidth = '98vw';
+        modalEl.style.width = '98vw';
+        modalEl.style.maxHeight = '95vh';
+        overlay.querySelector('#hv-form-fullscreen').textContent = '⛶ Thu nhỏ giao diện';
+      } else {
+        modalEl.style.maxWidth = '680px';
+        modalEl.style.width = '';
+        modalEl.style.maxHeight = '';
+        overlay.querySelector('#hv-form-fullscreen').textContent = '⛶ Phóng to giao diện';
+      }
+    };
     overlay.querySelector('#hv-cancel').onclick = ()=> overlay.remove();
+    bindNameUppercase(overlay.querySelector('#hv-hoTen'));
+    bindDigitsOnly(overlay.querySelector('#hv-cccd'));
+    function recalcDenNgayTuSoThang(){
+      const tuNgay = overlay.querySelector('#hv-tuNgay').value;
+      const soThang = parseFloat(overlay.querySelector('#hv-soThang').value);
+      if (tuNgay && soThang > 0){
+        overlay.querySelector('#hv-denNgay').value = addMonthsDecimalToDate(tuNgay, soThang);
+      }
+    }
+    overlay.querySelector('#hv-tuNgay').onchange = recalcDenNgayTuSoThang;
+    overlay.querySelector('#hv-soThang').oninput = recalcDenNgayTuSoThang;
     overlay.querySelector('#hv-save').onclick = async ()=>{
-      const hoTen = overlay.querySelector('#hv-hoTen').value.trim();
+      const hoTen = toVNUpperName(overlay.querySelector('#hv-hoTen').value.trim());
       if (!hoTen){ alert('Vui lòng nhập họ và tên học viên.'); return; }
       const data = {
         hoTen,
         ngaySinh: overlay.querySelector('#hv-ngaySinh').value,
-        cccd: overlay.querySelector('#hv-cccd').value.trim(),
+        cccd: digitsOnlyStr(overlay.querySelector('#hv-cccd').value),
+        ngayCapCccd: overlay.querySelector('#hv-ngayCapCccd').value,
+        noiCapCccd: overlay.querySelector('#hv-noiCapCccd').value.trim(),
         chucDanhDangKy: overlay.querySelector('#hv-chucDanh').value,
         trinhDoDaoTao: overlay.querySelector('#hv-trinhDo').value,
         loaiHinhThucHanh: overlay.querySelector('#hv-loaiHinh').value,
         donViCuTri: overlay.querySelector('#hv-donVi').value.trim(),
         mucDichThucHanh: overlay.querySelector('#hv-mucDich').value.trim(),
         tuNgayDeNghi: overlay.querySelector('#hv-tuNgay').value,
+        soThangDangKy: overlay.querySelector('#hv-soThang').value ? parseFloat(overlay.querySelector('#hv-soThang').value) : '',
         denNgayDeNghi: overlay.querySelector('#hv-denNgay').value,
         nguoiLienHe: overlay.querySelector('#hv-nguoiLienHe').value.trim(),
         soDienThoai: overlay.querySelector('#hv-soDt').value.trim(),
@@ -3812,20 +5526,31 @@
         ngayTiepNhan: overlay.querySelector('#hv-ngayTiepNhan').value,
         soVanBanTiepNhan: overlay.querySelector('#hv-soVanBan').value.trim(),
         ghiChuHoSo: overlay.querySelector('#hv-ghiChu').value.trim(),
+        soHopDongTH: overlay.querySelector('#hv-soHopDong').value.trim(),
+        ngayKyHopDongTH: overlay.querySelector('#hv-ngayKyHopDong').value,
+        daDongPhiTH: overlay.querySelector('#hv-daDongPhi').value === '1',
+        ngayDongPhiTH: overlay.querySelector('#hv-ngayDongPhi').value,
+        soTienPhiTH: overlay.querySelector('#hv-soTienPhi').value.trim(),
       };
       if (isEdit){
         Object.assign(t, data);
+        await saveTrainee(t);
       } else {
-        state.trainees.push(Object.assign({
-          id: uid('hv'), giaiDoan: [], trangThaiTongThe: 'Chưa bắt đầu',
+        const newTrainee = Object.assign({
+          id: uid('hv'), maHoSo: genMaHoSo(), daNopHoSo: true, giaiDoan: [], trangThaiTongThe: 'Chưa bắt đầu',
           hoSoDinhKem: DOC_CHECKLIST_HV.map(d=>({ key:d.key, ten:d.ten, batBuoc:d.batBuoc, trangThai:'Chưa nộp', ngayNop:'', ghiChu:'' })),
           ngayXacNhanHoanThanh:'', soGiayXacNhan:'', createdAt: todayISO(),
-        }, data));
+        }, data);
+        state.trainees.push(newTrainee);
+        await saveTrainee(newTrainee);
       }
-      await saveTrainees();
       overlay.remove();
       renderAdminApp();
-      showToast(isEdit ? 'Đã lưu thay đổi hồ sơ học viên.' : 'Đã tiếp nhận học viên mới.');
+      if (isEdit){
+        showToast('Đã lưu thay đổi hồ sơ học viên.');
+      } else {
+        alert('Đã tiếp nhận học viên mới!\n\nMã hồ sơ của học viên: ' + newTrainee.maHoSo + '\n\nVui lòng báo lại mã này (kèm mã xác nhận mặc định = 4 số cuối CCCD) cho học viên để họ tự đăng nhập theo dõi tiến độ thực hành.');
+      }
     };
   }
 
@@ -3833,21 +5558,84 @@
     const t = state.trainees.find(x=>x.id===traineeId);
     if (!t) return;
     const docs = ensureTraineeDocs(t);
-    const overlay = el(`<div class="modal-overlay"><div class="modal" style="max-width:780px">
-      <h3>Hồ sơ đính kèm — ${t.hoTen}</h3>
+    const overlay = el(`<div class="modal-overlay"><div class="modal" id="hv-docs-modal" style="max-width:860px">
+      <div class="row-flex" style="justify-content:space-between;align-items:center">
+        <h3 style="margin:0">Hồ sơ đính kèm — ${t.hoTen}</h3>
+        <button class="secondary" id="hv-docs-fullscreen" title="Phóng to toàn bộ cửa sổ này cho dễ xem">⛶ Phóng to giao diện</button>
+      </div>
+      ${traineeQuickNavHtml(t)}
       <p class="muted" style="margin-top:-6px">Đối chiếu theo Phụ lục 1 — danh mục giấy tờ hành chính học viên nộp khi đăng ký. Cập nhật trạng thái ngay khi nhận được từng giấy tờ.</p>
+      <p class="muted" style="margin-top:-4px;font-style:italic">💡 Học viên có thể tự đính kèm các giấy tờ này trong tab "📝 Khai báo hồ sơ" của họ (bất kỳ lúc nào trước khi hồ sơ được duyệt), hoặc Phòng CĐT đính kèm thay ngay tại đây khi nhận trực tiếp bản giấy. Cả hai đều cùng một hồ sơ — không có thư mục riêng, file được lưu thẳng trong hồ sơ của học viên và xem lại được bất cứ lúc nào bằng nút 📎/🔍 bên dưới.</p>
+      <div class="row-flex" style="margin-bottom:10px">
+        <button class="secondary" id="hv-autocheck-btn">🔍 Kiểm tra hồ sơ tự động</button>
+        <button id="hv-confirm-receipt-btn">✅ Xác nhận & Lập phiếu tiếp nhận</button>
+        <button class="secondary" id="hv-manage-checklist-btn">⚙️ Quản lý danh mục giấy tờ</button>
+        ${t.phieuTiepNhan ? `<button class="secondary" id="hv-print-receipt-btn">🖨️ Xem/In phiếu tiếp nhận</button>` : ''}
+      </div>
+      <div id="hv-schedule-status" style="margin-bottom:10px"></div>
+      <div id="hv-autocheck-result"></div>
       <div id="hv-docs-list"></div>
       <div class="row-flex" style="justify-content:flex-end;margin-top:14px">
         <button id="hv-docs-close">Đóng</button>
       </div>
     </div></div>`);
     root.appendChild(overlay);
+    bindTraineeQuickNav(overlay, t);
+    let isFull = false;
+    overlay.querySelector('#hv-docs-fullscreen').onclick = ()=>{
+      const modalEl = overlay.querySelector('#hv-docs-modal');
+      isFull = !isFull;
+      if (isFull){
+        modalEl.style.maxWidth = '98vw';
+        modalEl.style.width = '98vw';
+        modalEl.style.maxHeight = '95vh';
+        overlay.querySelector('#hv-docs-fullscreen').textContent = '⛶ Thu nhỏ giao diện';
+      } else {
+        modalEl.style.maxWidth = '860px';
+        modalEl.style.width = '';
+        modalEl.style.maxHeight = '';
+        overlay.querySelector('#hv-docs-fullscreen').textContent = '⛶ Phóng to giao diện';
+      }
+    };
+    overlay.querySelector('#hv-autocheck-btn').onclick = ()=>{
+      const errs = hvAutoCheckErrors(t);
+      const box = overlay.querySelector('#hv-autocheck-result');
+      if (!errs.length){
+        box.innerHTML = `<div class="card" style="background:#f2f9f4;border-color:var(--green);margin-bottom:12px"><b style="color:var(--green)">✅ Không phát hiện lỗi rõ ràng trong hồ sơ đã nhập.</b></div>`;
+      } else {
+        box.innerHTML = `<div class="card" style="background:var(--amber-bg);border-color:var(--amber);margin-bottom:12px">
+          <b>⚠ Trợ lý phát hiện ${errs.length} điểm cần kiểm tra/bổ sung:</b>
+          <ul style="margin:8px 0 0 18px">${errs.map(e=>`<li>${e}</li>`).join('')}</ul>
+        </div>`;
+      }
+    };
+    overlay.querySelector('#hv-confirm-receipt-btn').onclick = async ()=>{
+      const s = traineeDocsSummary(t);
+      const ketQua = s.missing === 0 ? 'Đầy đủ' : 'Thiếu';
+      const soPhieuCu = t.phieuTiepNhan && t.phieuTiepNhan.soPhieu;
+      const soPhieu = soPhieuCu || await genSoPhieuTiepNhan();
+      t.phieuTiepNhan = { ngayLap: (t.phieuTiepNhan && t.phieuTiepNhan.ngayLap) || todayISO(), ketQua, danhSachThieu: s.missingNames, soPhieu };
+      await saveTrainee(t);
+      exportPhieuTiepNhanFilled(t);
+      showToast(ketQua==='Đầy đủ' ? '✅ Đã xác nhận hồ sơ đầy đủ — đã tải file Phiếu tiếp nhận, học viên sẽ thấy kết quả này khi đăng nhập lại.' : '⚠ Đã lập phiếu — đã tải file Phiếu tiếp nhận, hồ sơ còn thiếu nên học viên sẽ thấy danh sách cần bổ sung khi đăng nhập lại.');
+      refreshDocs();
+      renderScheduleStatus();
+    };
+    const printReceiptBtn = overlay.querySelector('#hv-print-receipt-btn');
+    if (printReceiptBtn) printReceiptBtn.onclick = ()=> exportPhieuTiepNhanFilled(t);
+    overlay.querySelector('#hv-manage-checklist-btn').onclick = ()=>{
+      openDocChecklistManagerModal(()=>{
+        ensureTraineeDocs(t);
+        refreshDocs();
+        renderScheduleStatus();
+      });
+    };
     function refreshDocs(){
       const listEl = overlay.querySelector('#hv-docs-list');
       listEl.innerHTML = `
         <div class="scroll-table-wrap">
         <table>
-          <thead><tr><th>Giấy tờ</th><th>Bắt buộc</th><th>Trạng thái</th><th>Ngày nộp</th><th>Ghi chú</th></tr></thead>
+          <thead><tr><th>Giấy tờ</th><th>Bắt buộc</th><th>Trạng thái</th><th>Ngày nộp</th><th>Ghi chú</th><th>Đính kèm</th></tr></thead>
           <tbody>${docs.map((d,idx)=>`
             <tr>
               <td>${d.ten}</td>
@@ -3855,6 +5643,10 @@
               <td><select data-dchg="${idx}">${TRANG_THAI_GIAY_TO_HV.map(x=>`<option value="${x}" ${x===d.trangThai?'selected':''}>${x}</option>`).join('')}</select></td>
               <td><input type="date" data-dngay="${idx}" value="${d.ngayNop||''}" style="width:140px" /></td>
               <td><input type="text" data-dnote="${idx}" value="${d.ghiChu||''}" placeholder="Ghi chú" /></td>
+              <td style="text-align:center">
+                <button type="button" class="ghost small-btn" data-dattach="${idx}">${docHasFiles(d) ? '📎 Đã có ('+ensureDocFiles(d).length+') ✅'+(docHasBlurryFile(d)?' ⚠':'') : '📎 Đính kèm'}</button>
+                ${docHasFiles(d) ? `<button type="button" class="ghost small-btn" data-dzoom2="${idx}" title="Xem phóng to">🔍 Phóng to</button>` : ''}
+              </td>
             </tr>
           `).join('')}</tbody>
         </table>
@@ -3862,17 +5654,52 @@
         <p class="muted" style="margin-top:8px">${(()=>{ const s=traineeDocsSummary(t); return s.missing===0 ? 'Đã đầy đủ giấy tờ bắt buộc.' : `Còn thiếu ${s.missing} giấy tờ bắt buộc: ${s.missingNames.join('; ')}`; })()}</p>
       `;
       listEl.querySelectorAll('[data-dchg]').forEach(sel=>{
-        sel.onchange = async ()=>{ docs[Number(sel.getAttribute('data-dchg'))].trangThai = sel.value; await saveTrainees(); refreshDocs(); };
+        sel.onchange = async ()=>{ docs[Number(sel.getAttribute('data-dchg'))].trangThai = sel.value; await saveTrainee(t); refreshDocs(); };
       });
       listEl.querySelectorAll('[data-dngay]').forEach(inp=>{
-        inp.onchange = async ()=>{ docs[Number(inp.getAttribute('data-dngay'))].ngayNop = inp.value; await saveTrainees(); };
+        inp.onchange = async ()=>{ docs[Number(inp.getAttribute('data-dngay'))].ngayNop = inp.value; await saveTrainee(t); };
       });
       listEl.querySelectorAll('[data-dnote]').forEach(inp=>{
-        inp.onchange = async ()=>{ docs[Number(inp.getAttribute('data-dnote'))].ghiChu = inp.value.trim(); await saveTrainees(); };
+        inp.onchange = async ()=>{ docs[Number(inp.getAttribute('data-dnote'))].ghiChu = inp.value.trim(); await saveTrainee(t); };
       });
+      listEl.querySelectorAll('[data-dattach]').forEach(btn=>{
+        btn.onclick = ()=> openDocAttachModal(t, docs[Number(btn.getAttribute('data-dattach'))], refreshDocs);
+      });
+      listEl.querySelectorAll('[data-dzoom2]').forEach(btn=>{
+        btn.onclick = ()=>{ quickZoomDoc(t, docs[Number(btn.getAttribute('data-dzoom2'))]); };
+      });
+    }
+    function renderScheduleStatus(){
+      const box = overlay.querySelector('#hv-schedule-status');
+      const hasSchedule = !!(t.tuNgayDeNghi && t.denNgayDeNghi);
+      const docsOk = traineeDocsSummary(t).missing === 0;
+      const scheduleKey = traineeScheduleKey(t);
+      const seen = hasSchedule && t.scheduleNotifySeen === scheduleKey;
+      let statusHtml;
+      if (!hasSchedule){
+        statusHtml = '<span class="pill gray">Chưa xếp lịch (Từ ngày/Đến ngày còn trống trong "✏️ Sửa hồ sơ")</span>';
+      } else if (!docsOk){
+        statusHtml = '<span class="pill amber">Đã xếp lịch nhưng hồ sơ còn thiếu giấy tờ — học viên CHƯA thấy banner thông báo</span>';
+      } else if (!seen){
+        statusHtml = '<span class="pill green">Đủ điều kiện — học viên sẽ thấy banner thông báo khi đăng nhập lại</span>';
+      } else {
+        statusHtml = '<span class="pill gray">Học viên đã xem thông báo lịch học này rồi (cùng ngày ' + fmtDateRange(t.tuNgayDeNghi,t.denNgayDeNghi) + ')</span>';
+      }
+      box.innerHTML = `<div class="card" style="background:#f8f7f1">
+        <b>🔔 Thông báo lịch học tự động:</b> ${statusHtml}
+        ${hasSchedule && docsOk && seen ? '<div class="row-flex" style="margin-top:8px"><button class="secondary" id="hv-resend-schedule">🔄 Gửi lại thông báo (học viên sẽ thấy lại banner)</button></div>' : ''}
+      </div>`;
+      const resendBtn = overlay.querySelector('#hv-resend-schedule');
+      if (resendBtn) resendBtn.onclick = async ()=>{
+        t.scheduleNotifySeen = '';
+        await saveTrainee(t);
+        showToast('Đã gửi lại — học viên sẽ thấy banner thông báo lịch học ở lần đăng nhập tiếp theo.');
+        renderScheduleStatus();
+      };
     }
     overlay.querySelector('#hv-docs-close').onclick = ()=>{ overlay.remove(); renderAdminApp(); };
     refreshDocs();
+    renderScheduleStatus();
   }
 
   function countMenteesAtRange(empId, tuNgay, denNgay, excludeStageId){
@@ -3933,8 +5760,12 @@
     const stages = t.giaiDoan || [];
     const tuNgayThucHanh = stages.length ? stages[0].tuNgay : t.tuNgayDeNghi;
     const denNgayThucHanh = stages.length ? stages[stages.length-1].denNgay : t.denNgayDeNghi;
-    const overlay = el(`<div class="modal-overlay"><div class="modal" style="max-width:680px">
-      <h3>📜 Quyết định phân công thực hành — ${t.hoTen}</h3>
+    const overlay = el(`<div class="modal-overlay"><div class="modal" id="qd-modal" style="max-width:680px">
+      <div class="row-flex" style="justify-content:space-between;align-items:center">
+        <h3 style="margin:0">📜 Quyết định phân công thực hành — ${t.hoTen}</h3>
+        <button type="button" class="secondary" id="qd-fullscreen" title="Phóng to toàn bộ cửa sổ này cho dễ xem">⛶ Phóng to giao diện</button>
+      </div>
+      ${traineeQuickNavHtml(t)}
       <p class="muted" style="margin-top:-6px">Sau khi Giám đốc đã ký quyết định, đính kèm bản quét/ảnh quyết định vào hồ sơ học viên tại đây. Có thể nhập kèm số QĐ/ngày ký để tiện tra cứu, hoặc xuất bản dự thảo Quyết định + Phụ lục để trình ký nếu chưa có.</p>
       <div class="card" style="background:#f8f7f1">
         <h3 style="font-size:14px">Thông tin tự động lấy từ hồ sơ học viên</h3>
@@ -3980,6 +5811,19 @@
       <p class="muted" style="margin-top:4px;font-style:italic">Lưu ý: hãy bấm "💾 Lưu" trước khi xuất, để file/đường link mới đính kèm được ghi nhận.</p>
     </div></div>`);
     root.appendChild(overlay);
+    bindTraineeQuickNav(overlay, t);
+    let qdIsFull = false;
+    overlay.querySelector('#qd-fullscreen').onclick = ()=>{
+      const modalEl = overlay.querySelector('#qd-modal');
+      qdIsFull = !qdIsFull;
+      if (qdIsFull){
+        modalEl.style.maxWidth = '98vw'; modalEl.style.width = '98vw'; modalEl.style.maxHeight = '95vh';
+        overlay.querySelector('#qd-fullscreen').textContent = '⛶ Thu nhỏ giao diện';
+      } else {
+        modalEl.style.maxWidth = '680px'; modalEl.style.width = ''; modalEl.style.maxHeight = '';
+        overlay.querySelector('#qd-fullscreen').textContent = '⛶ Phóng to giao diện';
+      }
+    };
     let pendingQdFile = qd.fileDataUrl ? { dataUrl: qd.fileDataUrl, type: qd.fileType, name: qd.fileName, isBlurry:false, blurConfirmed:true } : null;
     function renderQdCurrentFile(){
       const box = overlay.querySelector('#qdf-current');
@@ -4029,7 +5873,7 @@
       qd.fileDataUrl = pendingQdFile ? pendingQdFile.dataUrl : '';
       qd.fileType = pendingQdFile ? pendingQdFile.type : '';
       qd.fileName = pendingQdFile ? pendingQdFile.name : '';
-      await saveTrainees();
+      await saveTrainee(t);
     }
     overlay.querySelector('#qd-save').onclick = async ()=>{ await saveQd(); showInlineQdMsg('✅ Đã lưu.'); };
     function showInlineQdMsg(msg){
@@ -4199,14 +6043,51 @@
     const stages = t.giaiDoan;
     const totalMonthsSaved = stages.reduce((sum,s)=> sum + monthsDecimal(s.tuNgay, s.denNgay), 0);
     const lastStage = stages[stages.length-1];
+    function computeNextTuNgay(){
+      const ends = [];
+      (t.giaiDoan||[]).forEach(s=>{ if (s.denNgay) ends.push(s.denNgay); });
+      (t.deNghiPhanCongList||[]).forEach(r=>{ if (r.denNgay) ends.push(r.denNgay); });
+      if (!ends.length) return '';
+      return nextDayISO(ends.sort().slice(-1)[0]);
+    }
     const defaultTuNgay = lastStage ? nextDayISO(lastStage.denNgay) : '';
     const unitOptions = state.config.units.slice().sort((a,b)=>a.name.localeCompare(b.name));
-    const overlay = el(`<div class="modal-overlay"><div class="modal" style="max-width:820px">
-      <h3>Phân khoa & theo dõi thực hành — ${t.hoTen}</h3>
+    const overlay = el(`<div class="modal-overlay"><div class="modal" id="pk-modal" style="max-width:820px">
+      <div class="row-flex" style="justify-content:space-between;align-items:center">
+        <h3 style="margin:0">Phân khoa & theo dõi thực hành — ${t.hoTen}</h3>
+        <button type="button" class="secondary" id="pk-fullscreen" title="Phóng to toàn bộ cửa sổ này cho dễ xem">⛶ Phóng to giao diện</button>
+      </div>
+      ${traineeQuickNavHtml(t)}
       <p class="muted" style="margin-top:-6px">Tổng số tháng đã phân khoa (đã lưu): <b id="hv-total-months">${totalMonthsSaved.toFixed(1)}</b> tháng</p>
+      <div class="row-flex" style="margin-bottom:10px">
+        <button type="button" class="secondary" id="pk-export-congvan">📄 Xuất Công văn phân công (gửi khoa)</button>
+        <button type="button" class="secondary" id="pk-export-quyetdinh">📄 Xuất Quyết định phân công người hướng dẫn</button>
+        <button type="button" class="secondary" id="pk-export-hoanthanh">🎓 Xuất Giấy xác nhận hoàn thành thực hành</button>
+        <button type="button" class="secondary" id="pk-export-nhanxettonghop">📊 Xuất Bản nhận xét tổng hợp cuối khóa</button>
+      </div>
+      <p class="muted" style="margin-top:-6px;font-style:italic">💡 Cả 2 file sẽ tự điền theo đúng các giai đoạn đã lưu (${totalMonthsSaved.toFixed(1)} tháng) — anh có thể xuất bất cứ lúc nào, kể cả khi chưa đủ tổng số tháng, để rà soát trước.</p>
       <div id="hv-stage-list"></div>
-      <div class="card" style="margin-top:14px;background:#f8f7f1">
-        <h3 style="font-size:14px">➕ Thêm giai đoạn thực hành mới</h3>
+      <div id="hv-pending-assign-list"></div>
+      <div class="card" style="margin-top:14px;background:#fff;padding:10px 16px">
+        <p class="muted" style="margin:0 0 8px 0"><b>Chọn cách phân khoa cho giai đoạn tiếp theo:</b></p>
+        <div class="row-flex">
+          <button type="button" id="pk-mode-dnpc-btn" style="flex:1">📤 Gửi đề nghị cho khoa tự phân công <span style="font-weight:normal">(khuyến nghị)</span></button>
+          <button type="button" class="secondary" id="pk-mode-manual-btn" style="flex:1">➕ CĐT tự phân công trực tiếp <span style="font-weight:normal">(nâng cao)</span></button>
+        </div>
+      </div>
+      <div id="pk-block-dnpc" class="card" style="margin-top:14px;background:#eef6ff">
+        <h3 style="font-size:14px">📤 Gửi đề nghị phân công cho khoa <span class="muted" style="font-weight:normal">(khoa tự chọn người hướng dẫn, ký xác nhận)</span></h3>
+        <p class="muted" style="margin-top:-6px">Thay vì CĐT tự chọn người hướng dẫn, gửi đề nghị để khoa tự phân công nhân viên đủ điều kiện của khoa và ký xác nhận — hệ thống tự tạo giai đoạn thực hành ngay khi khoa xác nhận xong, không cần CĐT nhập lại.</p>
+        <div class="row-flex">
+          <div class="field"><label>Khoa dự kiến</label><div id="dnpc-khoa-ssel"></div></div>
+          <div class="field"><label>Từ ngày <span class="muted" style="font-weight:normal">(tự gợi ý nối tiếp giai đoạn gần nhất)</span></label><input id="dnpc-tuNgay" type="date" value="${computeNextTuNgay()}" /></div>
+          <div class="field"><label>Số tháng</label><input id="dnpc-soThang" type="number" min="0" step="0.5" placeholder="VD: 2" /></div>
+        </div>
+        <button id="dnpc-send-btn">📤 Gửi đề nghị cho khoa</button>
+      </div>
+      <div id="pk-block-manual" class="card" style="margin-top:14px;background:#f8f7f1;display:none">
+        <h3 style="font-size:14px">➕ Thêm giai đoạn thực hành mới <span class="muted" style="font-weight:normal">(chỉ dùng khi CĐT đã biết sẵn người hướng dẫn)</span></h3>
+        <p class="muted" style="margin-top:-6px">Nếu đã dùng "📤 Gửi đề nghị phân công" ở trên cho giai đoạn này, KHÔNG cần điền lại ở đây — hệ thống sẽ tự thêm vào khi khoa xác nhận xong. Khối này chỉ dành cho trường hợp CĐT tự phân công trực tiếp; mục "Người hướng dẫn" có thể để trống, điền bổ sung sau.</p>
         <div class="row-flex">
           <div class="field"><label>Khoa thực hành</label>
             <div id="ns-khoa-ssel"></div>
@@ -4235,6 +6116,43 @@
       </div>
     </div></div>`);
     root.appendChild(overlay);
+    bindTraineeQuickNav(overlay, t);
+    let pkIsFull = false;
+    overlay.querySelector('#pk-fullscreen').onclick = ()=>{
+      const modalEl = overlay.querySelector('#pk-modal');
+      pkIsFull = !pkIsFull;
+      if (pkIsFull){
+        modalEl.style.maxWidth = '98vw'; modalEl.style.width = '98vw'; modalEl.style.maxHeight = '95vh';
+        overlay.querySelector('#pk-fullscreen').textContent = '⛶ Thu nhỏ giao diện';
+      } else {
+        modalEl.style.maxWidth = '820px'; modalEl.style.width = ''; modalEl.style.maxHeight = '';
+        overlay.querySelector('#pk-fullscreen').textContent = '⛶ Phóng to giao diện';
+      }
+    };
+    function setPkMode(mode){
+      const dnpcBlock = overlay.querySelector('#pk-block-dnpc');
+      const manualBlock = overlay.querySelector('#pk-block-manual');
+      const dnpcBtn = overlay.querySelector('#pk-mode-dnpc-btn');
+      const manualBtn = overlay.querySelector('#pk-mode-manual-btn');
+      if (mode === 'manual'){
+        dnpcBlock.style.display = 'none'; manualBlock.style.display = '';
+        dnpcBtn.className = 'secondary'; manualBtn.className = '';
+      } else {
+        dnpcBlock.style.display = ''; manualBlock.style.display = 'none';
+        dnpcBtn.className = ''; manualBtn.className = 'secondary';
+      }
+    }
+    setPkMode('dnpc');
+    overlay.querySelector('#pk-mode-dnpc-btn').onclick = ()=> setPkMode('dnpc');
+    overlay.querySelector('#pk-export-congvan').onclick = ()=> exportCongVanPhanCongFilled(t);
+    overlay.querySelector('#pk-export-quyetdinh').onclick = ()=> exportQuyetDinhPhanCongFilled(t);
+    overlay.querySelector('#pk-export-hoanthanh').onclick = ()=>{
+      const chuaKetThuc = stages.some(s=>s.trangThai!=='Đã kết thúc');
+      if (chuaKetThuc && !confirm('Vẫn còn giai đoạn chưa "Đã kết thúc". Bạn có chắc muốn xuất Giấy xác nhận hoàn thành không?')) return;
+      exportGiayXacNhanHoanThanhFilled(t);
+    };
+    overlay.querySelector('#pk-export-nhanxettonghop').onclick = ()=> exportBanNhanXetTongHopFilled(t);
+    overlay.querySelector('#pk-mode-manual-btn').onclick = ()=> setPkMode('manual');
 
     let nsKhoaId = '';
     let nsHdId = '';
@@ -4268,6 +6186,88 @@
       });
     }
     refreshKhoaSelectNs();
+    let dnpcKhoaId = '';
+    const dnpcKhoaOptions = [{ id:'', label:'— Chọn khoa/phòng —', isAction:true }].concat(unitOptions.map(u=>({ id:u.id, label:u.name })));
+    createSearchableSelect(overlay.querySelector('#dnpc-khoa-ssel'), dnpcKhoaOptions, {
+      placeholder: 'Gõ để tìm Khoa/Phòng...',
+      onSelect: (id)=>{ dnpcKhoaId = id; }
+    });
+    function refreshPendingAssignList(){
+      const list = t.deNghiPhanCongList || [];
+      const wrap = overlay.querySelector('#hv-pending-assign-list');
+      if (!list.length){ wrap.innerHTML = ''; return; }
+      const tongThang = list.reduce((sum,r)=> sum + (parseFloat(r.soThang)||0), 0);
+      const locked = !!t.khoaDeNghiPhanCong;
+      wrap.innerHTML = `<div class="card" style="background:#fffceb;border-color:var(--amber)">
+        <div class="row-flex" style="justify-content:space-between;align-items:center">
+          <h3 style="font-size:14px;margin:0">📤 Đề nghị phân công đã gửi</h3>
+          <button type="button" class="secondary" id="pk-lock-toggle">${locked ? '🔓 Mở khoá để chỉnh sửa' : '🔒 Khoá lại (tránh xoá nhầm)'}</button>
+        </div>
+        <p class="muted" style="margin-top:6px">Tổng số tháng đã lên kế hoạch (cả đang chờ lẫn đã phân công): <b>${tongThang.toFixed(1)}</b> tháng${locked ? ' — <span style="color:var(--red)">🔒 Đang khoá, không xoá được</span>' : ''}</p>
+        <table><thead><tr><th>Khoa</th><th>Thời gian dự kiến</th><th>Số tháng</th><th>Trạng thái</th><th>Người hướng dẫn (khoa chọn)</th><th></th></tr></thead>
+        <tbody>${list.map(r=>`<tr>
+          <td>${r.khoaTen}</td>
+          <td>${fmtDateRange(r.tuNgay, r.denNgay)}</td>
+          <td style="text-align:center">${(parseFloat(r.soThang)||0).toFixed(1)}</td>
+          <td>${r.trangThai==='Đã phân công' ? '<span class="pill green">Đã phân công</span>' : '<span class="pill amber">Chờ khoa phân công</span>'}</td>
+          <td>${r.nguoiHuongDan || '—'}${r.nguoiKy ? ' <span class="muted">(Ký bởi '+r.nguoiKy+', '+fmtDate(r.ngayKy)+')</span>' : ''}</td>
+          <td>${r.trangThai!=='Đã phân công' ? `
+            <button type="button" class="ghost small-btn" data-copy-link="${r.khoaId}">🔗 Copy link cho khoa</button>
+            ${!locked ? `<button type="button" class="ghost small-btn" data-del-req="${r.id}" title="Xoá đề nghị này để gửi lại">🗑️ Xoá</button>` : ''}
+          ` : ''}</td>
+        </tr>`).join('')}
+        <tr style="font-weight:bold;background:#f3f1e6"><td colspan="2" style="text-align:right">Tổng cộng:</td><td style="text-align:center">${tongThang.toFixed(1)}</td><td colspan="3"></td></tr>
+        </tbody></table>
+        <p class="muted" style="margin-top:8px;font-style:italic">💡 Bấm "🔗 Copy link cho khoa", gửi qua Zalo/tin nhắn cho Trưởng khoa — họ chỉ cần bấm vào là vào thẳng màn phân công của khoa mình, không cần tự đăng nhập tay. Chỉ gửi cho đúng khoa đó, không share công khai vì link có kèm mã PIN của khoa.</p>
+      </div>`;
+      overlay.querySelector('#pk-lock-toggle').onclick = async ()=>{
+        t.khoaDeNghiPhanCong = !t.khoaDeNghiPhanCong;
+        await saveTrainee(t);
+        modalToast(overlay, t.khoaDeNghiPhanCong ? '🔒 Đã khoá danh sách đề nghị — không xoá nhầm được nữa.' : '🔓 Đã mở khoá, có thể xoá/chỉnh sửa lại.');
+        refreshPendingAssignList();
+      };
+      wrap.querySelectorAll('[data-del-req]').forEach(btn=>{
+        btn.onclick = async ()=>{
+          if (!confirm('Xoá đề nghị phân công này? Anh có thể gửi lại đề nghị mới sau khi xoá.')) return;
+          t.deNghiPhanCongList = (t.deNghiPhanCongList||[]).filter(x=>x.id!==btn.getAttribute('data-del-req'));
+          await saveTrainee(t);
+          modalToast(overlay, 'Đã xoá đề nghị phân công.');
+          refreshPendingAssignList();
+          overlay.querySelector('#dnpc-tuNgay').value = computeNextTuNgay();
+        };
+      });
+      wrap.querySelectorAll('[data-copy-link]').forEach(btn=>{
+        btn.onclick = async ()=>{
+          const unitId = btn.getAttribute('data-copy-link');
+          const u = state.config.units.find(x=>x.id===unitId);
+          if (!u){ alert('Không tìm thấy thông tin khoa.'); return; }
+          const url = window.location.origin + window.location.pathname + '?unit=' + encodeURIComponent(u.id) + '&pin=' + encodeURIComponent(u.pin) + '&tab=phancong';
+          try {
+            await navigator.clipboard.writeText(url);
+            modalToast(overlay, 'Đã copy link — dán vào Zalo/tin nhắn gửi cho khoa "'+u.name+'".');
+          } catch(e){
+            prompt('Không tự copy được, anh copy thủ công link bên dưới:', url);
+          }
+        };
+      });
+    }
+    refreshPendingAssignList();
+    overlay.querySelector('#dnpc-send-btn').onclick = async ()=>{
+      const tuNgay = overlay.querySelector('#dnpc-tuNgay').value;
+      const soThang = parseFloat(overlay.querySelector('#dnpc-soThang').value);
+      if (!dnpcKhoaId){ alert('Vui lòng chọn khoa dự kiến.'); return; }
+      if (!tuNgay){ alert('Vui lòng nhập từ ngày.'); return; }
+      if (!soThang || soThang <= 0){ alert('Vui lòng nhập số tháng hợp lệ.'); return; }
+      const khoaTen = (state.config.units.find(u=>u.id===dnpcKhoaId)||{}).name || '';
+      const denNgay = addMonthsDecimalToDate(tuNgay, soThang);
+      t.deNghiPhanCongList = t.deNghiPhanCongList || [];
+      t.deNghiPhanCongList.push({ id: uid('dnpc'), khoaId: dnpcKhoaId, khoaTen, tuNgay, denNgay, soThang, trangThai:'Chờ phân công', nguoiHuongDanId:'', nguoiHuongDan:'', nguoiKy:'', ngayKy:'', createdAt: todayISO() });
+      await saveTrainee(t);
+      modalToast(overlay, 'Đã gửi đề nghị phân công cho khoa "'+khoaTen+'". Có thể tiếp tục gửi đề nghị cho khoa tiếp theo.');
+      refreshPendingAssignList();
+      overlay.querySelector('#dnpc-tuNgay').value = computeNextTuNgay();
+      overlay.querySelector('#dnpc-soThang').value = '';
+    };
     function refreshMonthsPreview(){
       const tuNgay = overlay.querySelector('#ns-tuNgay').value;
       const denNgay = overlay.querySelector('#ns-denNgay').value;
@@ -4309,7 +6309,12 @@
                 <select data-kqchg="${idx}">${KET_QUA_GIAI_DOAN_HV.map(x=>`<option value="${x}" ${x===(s.ketQua||'Chưa đánh giá')?'selected':''}>${x}</option>`).join('')}</select>
               </td>
               <td>${s.minhChungFile ? '<button class="ghost small-btn" data-view-mc="'+idx+'">📎 Xem</button>' : (s.minhChungLink ? '<a href="'+s.minhChungLink+'" target="_blank" rel="noopener">🔗 Link</a>' : '<span class="muted">Chưa có</span>')}</td>
-              <td style="white-space:nowrap"><button class="ghost small-btn" data-editstage="${idx}">✏️ Sửa</button> <button class="ghost small-btn" data-delstage="${idx}">🗑️</button></td>
+              <td style="white-space:nowrap">
+                <button class="ghost small-btn" data-editstage="${idx}">✏️ Sửa</button>
+                <button class="ghost small-btn" data-delstage="${idx}">🗑️</button>
+                <button class="ghost small-btn" data-giaythieu="${idx}" title="In giấy giới thiệu để học viên trình khoa">📄 GT${s.giayGioiThieuNgay ? ' ✅' : ''}</button>
+                <button class="ghost small-btn" data-nhanxet="${idx}" title="Soạn sẵn bản nhận xét để khoa chỉ cần ghi ý kiến và ký, không phải tự đánh máy">📋 NX${s.banNhanXetNgay ? ' ✅' : ''}</button>
+              </td>
             </tr>
           `).join('')}</tbody>
         </table>
@@ -4326,21 +6331,21 @@
             openStageEvidenceModal(stage, async ()=>{
               stage.trangThai = newVal;
               recomputeTraineeOverallStatus(t);
-              await saveTrainees();
+              await saveTrainee(t);
               refreshStages();
             }, ()=>{ refreshStages(); });
             return;
           }
           stage.trangThai = newVal;
           recomputeTraineeOverallStatus(t);
-          await saveTrainees();
+          await saveTrainee(t);
           refreshStages();
         };
       });
       listEl.querySelectorAll('[data-kqchg]').forEach(sel=>{
         sel.onchange = async ()=>{
           stages[Number(sel.getAttribute('data-kqchg'))].ketQua = sel.value;
-          await saveTrainees();
+          await saveTrainee(t);
         };
       });
       listEl.querySelectorAll('[data-view-mc]').forEach(b=>{
@@ -4360,7 +6365,27 @@
           if (!confirm('Xoá giai đoạn thực hành này?')) return;
           stages.splice(Number(b.getAttribute('data-delstage')), 1);
           recomputeTraineeOverallStatus(t);
-          await saveTrainees();
+          await saveTrainee(t);
+          refreshStages();
+        };
+      });
+      listEl.querySelectorAll('[data-giaythieu]').forEach(b=>{
+        b.onclick = async ()=>{
+          const stage = stages[Number(b.getAttribute('data-giaythieu'))];
+          exportGiayGioiThieuFilled(t, stage);
+          stage.giayGioiThieuNgay = todayISO();
+          await saveTrainee(t);
+          modalToast(overlay, 'Đã tạo Giấy giới thiệu cho khoa "'+stage.khoa+'" — đã lưu vào hồ sơ học viên.');
+          refreshStages();
+        };
+      });
+      listEl.querySelectorAll('[data-nhanxet]').forEach(b=>{
+        b.onclick = async ()=>{
+          const stage = stages[Number(b.getAttribute('data-nhanxet'))];
+          exportBanNhanXetFilled(t, stage);
+          stage.banNhanXetNgay = todayISO();
+          await saveTrainee(t);
+          modalToast(overlay, 'Đã soạn sẵn Bản nhận xét cho khoa "'+stage.khoa+'" — khoa chỉ cần ghi ý kiến và ký. Sau khi ký, đính kèm bản scan vào ô "Minh chứng" của giai đoạn này.');
           refreshStages();
         };
       });
@@ -4392,7 +6417,7 @@
         minhChungFile: '', minhChungFileType: '', minhChungFileName: '', minhChungLink: '',
       });
       recomputeTraineeOverallStatus(t);
-      await saveTrainees();
+      await saveTrainee(t);
       const newDefaultTu = nextDayISO(denNgay);
       nsKhoaId = '';
       nsHdId = '';
@@ -4530,7 +6555,7 @@
       stage.trangThai = overlay.querySelector('#es-trangThai').value;
       stage.noiDung = overlay.querySelector('#es-noiDung').value.trim();
       recomputeTraineeOverallStatus(t);
-      await saveTrainees();
+      await saveTrainee(t);
       overlay.remove();
       onDone();
     };
@@ -4605,8 +6630,12 @@
     if (!t) return;
     const stages = t.giaiDoan || [];
     const dieuKienDu = stages.length>0 && stages.every(s=>s.trangThai==='Đã kết thúc') && stages.every(s=>(s.ketQua||'Chưa đánh giá')==='Đạt' || s.ketQua==='Đạt có điều kiện');
-    const overlay = el(`<div class="modal-overlay"><div class="modal" style="max-width:520px">
-      <h3>Xác nhận hoàn thành thực hành — ${t.hoTen}</h3>
+    const overlay = el(`<div class="modal-overlay"><div class="modal" id="cf-modal" style="max-width:520px">
+      <div class="row-flex" style="justify-content:space-between;align-items:center">
+        <h3 style="margin:0">Xác nhận hoàn thành thực hành — ${t.hoTen}</h3>
+        <button type="button" class="secondary" id="cf-fullscreen" title="Phóng to toàn bộ cửa sổ này cho dễ xem">⛶ Phóng to giao diện</button>
+      </div>
+      ${traineeQuickNavHtml(t)}
       ${dieuKienDu ? `<p class="muted">Học viên đã hoàn thành tất cả các giai đoạn thực hành với kết quả đạt yêu cầu. Có thể trình ký cấp giấy xác nhận.</p>`
                    : `<p class="muted" style="color:var(--red)">⚠ Học viên chưa hoàn thành đủ điều kiện (còn giai đoạn chưa kết thúc hoặc kết quả chưa đạt). Vẫn có thể ghi nhận thủ công nếu lãnh đạo đã có quyết định riêng.</p>`}
       <div class="field"><label>Số giấy xác nhận hoàn thành thực hành</label><input id="cf-soGiay" value="${t.soGiayXacNhan||''}" /></div>
@@ -4617,12 +6646,25 @@
       </div>
     </div></div>`);
     root.appendChild(overlay);
+    bindTraineeQuickNav(overlay, t);
+    let cfIsFull = false;
+    overlay.querySelector('#cf-fullscreen').onclick = ()=>{
+      const modalEl = overlay.querySelector('#cf-modal');
+      cfIsFull = !cfIsFull;
+      if (cfIsFull){
+        modalEl.style.maxWidth = '98vw'; modalEl.style.width = '98vw'; modalEl.style.maxHeight = '95vh';
+        overlay.querySelector('#cf-fullscreen').textContent = '⛶ Thu nhỏ giao diện';
+      } else {
+        modalEl.style.maxWidth = '520px'; modalEl.style.width = ''; modalEl.style.maxHeight = '';
+        overlay.querySelector('#cf-fullscreen').textContent = '⛶ Phóng to giao diện';
+      }
+    };
     overlay.querySelector('#cf-cancel').onclick = ()=> overlay.remove();
     overlay.querySelector('#cf-save').onclick = async ()=>{
       t.soGiayXacNhan = overlay.querySelector('#cf-soGiay').value.trim();
       t.ngayXacNhanHoanThanh = overlay.querySelector('#cf-ngay').value;
       t.trangThaiTongThe = 'Đã xác nhận hoàn thành';
-      await saveTrainees();
+      await saveTrainee(t);
       overlay.remove();
       renderAdminApp();
       showToast('Đã xác nhận hoàn thành thực hành cho học viên.');
@@ -5012,6 +7054,22 @@
     }
     await loadAll();
     await seedDemoData();
+    // Đăng nhập nhanh bằng link trực tiếp (VD: ...?unit=<maKhoa>&pin=<pin>&tab=phancong)
+    // để Khoa/Phòng bấm 1 phát vào thẳng màn "Đề nghị phân công", không cần tự tìm/đăng nhập tay.
+    try {
+      const qs = new URLSearchParams(window.location.search);
+      const qUnit = qs.get('unit');
+      const qPin = qs.get('pin');
+      if (qUnit && qPin){
+        const u = state.config.units.find(x=>x.id===qUnit);
+        if (u && u.pin === qPin){
+          state.role = 'unit'; state.unitId = u.id; state.unitName = u.name;
+          state.tab = qs.get('tab') || 'phancong';
+        }
+        // Xoá tham số khỏi thanh địa chỉ sau khi dùng, tránh lộ mã PIN khi share/lưu lại link.
+        window.history.replaceState({}, '', window.location.pathname);
+      }
+    } catch(e){}
     render();
   })();
 })();
