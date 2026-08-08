@@ -256,7 +256,27 @@
     "Giảng dạy y khoa",
     "Tự học có kiểm soát / Khác"
   ];
-  const CHUC_DANH = ["Chưa xác định","Bác sĩ","Y sĩ","Điều dưỡng","Hộ sinh","Kỹ thuật y","Dược sĩ","Dinh dưỡng lâm sàng","Cấp cứu viên ngoại viện","Tâm lý lâm sàng","Khác"];
+  const CHUC_DANH_DEFAULT = ["Chưa xác định","Bác sĩ","Y sĩ","Điều dưỡng","Hộ sinh","Kỹ thuật y","Dược sĩ","Dinh dưỡng lâm sàng","Cấp cứu viên ngoại viện","Tâm lý lâm sàng","Khác"];
+  const NOI_CAP_CCCD_DEFAULT = ["Cục Cảnh sát quản lý hành chính về trật tự xã hội"];
+  // ---- Danh mục dùng chung, Admin có thể tự cấu hình (Cài đặt → Danh mục dữ liệu) ----
+  // Trả về danh sách hiện hành từ state.config.danhMuc; nếu chưa có/rỗng thì dùng danh sách mặc định.
+  function dmList(key, fallback){
+    const dm = state.config && state.config.danhMuc;
+    return (dm && Array.isArray(dm[key]) && dm[key].length) ? dm[key] : fallback;
+  }
+  function CHUC_DANH_LIST(){ return dmList('chucDanh', CHUC_DANH_DEFAULT); }
+  function TRINH_DO_LIST(){ return dmList('trinhDo', TRINH_DO_DEFAULT); }
+  function LOAI_HINH_THUC_HANH_LIST(){ return dmList('loaiHinh', LOAI_HINH_THUC_HANH_DEFAULT); }
+  function NOI_CAP_CCCD_LIST(){ return dmList('noiCapCccd', NOI_CAP_CCCD_DEFAULT); }
+  // Đảm bảo state.config.danhMuc luôn tồn tại đủ 4 danh mục (khởi tạo từ danh sách mặc định lần đầu).
+  function ensureDanhMuc(){
+    if (!state.config.danhMuc) state.config.danhMuc = {};
+    const dm = state.config.danhMuc;
+    if (!Array.isArray(dm.chucDanh) || !dm.chucDanh.length) dm.chucDanh = CHUC_DANH_DEFAULT.slice();
+    if (!Array.isArray(dm.trinhDo) || !dm.trinhDo.length) dm.trinhDo = TRINH_DO_DEFAULT.slice();
+    if (!Array.isArray(dm.loaiHinh) || !dm.loaiHinh.length) dm.loaiHinh = LOAI_HINH_THUC_HANH_DEFAULT.slice();
+    if (!Array.isArray(dm.noiCapCccd)) dm.noiCapCccd = NOI_CAP_CCCD_DEFAULT.slice();
+  }
   const CHUC_VU = ["Nhân viên","Phó Trưởng khoa","Trưởng khoa","Phó Trưởng phòng","Trưởng phòng","Điều dưỡng trưởng","Phó Giám đốc","Giám đốc","Khác"];
   const ADMIN_ROLES = {
     truongphong: { label: 'Trưởng phòng CĐT (Toàn quyền)', tabs: 'all' },
@@ -268,8 +288,8 @@
   };
   function isFullAccessRole(role){ return !!(ADMIN_ROLES[role] && ADMIN_ROLES[role].tabs === 'all'); }
   function isReadOnlyRole(role){ return !!(ADMIN_ROLES[role] && ADMIN_ROLES[role].readOnly); }
-  const TRINH_DO = ["Chưa xác định","Sau đại học","Đại học","Cao đẳng","Trung cấp"];
-  const LOAI_HINH_THUC_HANH = [
+  const TRINH_DO_DEFAULT = ["Chưa xác định","Sau đại học","Đại học","Cao đẳng","Trung cấp"];
+  const LOAI_HINH_THUC_HANH_DEFAULT = [
     "Thực hành lần đầu để cấp GPHN",
     "Thực hành bổ sung phạm vi hành nghề",
     "Thực hành chuyển đổi chức danh chuyên môn",
@@ -396,12 +416,14 @@
     return new Promise(function(resolve, reject){
       if (file.size > 8 * 1024 * 1024){ reject(new Error('File quá lớn (tối đa 8MB).')); return; }
       // PDF và các file không phải ảnh KHÔNG được nén — mã hoá base64 để lưu sẽ phình to hơn ~33%.
-      // Firestore giới hạn ~1MB/tài liệu, nên phải chặn sớm ở mức an toàn (700KB gốc ≈ 933KB sau mã hoá)
-      // để tránh lỗi khó hiểu giữa chừng lúc lưu và MẤT thao tác vừa làm.
-      const PDF_RAW_LIMIT = 700 * 1024;
+      // Hệ thống đã có cơ chế tự tách các chuỗi base64 lớn ra một "tài liệu lưu trữ riêng" cho từng
+      // file (xem offloadLargeBlobs ở trên), không dồn chung vào hồ sơ chính của học viên nữa — nên
+      // có thể nới giới hạn lên khá nhiều so với trước, chỉ cần đủ nhỏ để nằm an toàn dưới ngưỡng
+      // 5MB/tài liệu của kho lưu trữ (đặt 3MB gốc ≈ 4MB sau mã hoá, còn dư khá nhiều so với 5MB).
+      const PDF_RAW_LIMIT = 3 * 1024 * 1024;
       if (file.type === 'application/pdf'){
         if (file.size > PDF_RAW_LIMIT){
-          reject(new Error('File PDF quá lớn (' + (file.size/1024/1024).toFixed(1) + 'MB, tối đa ~0.7MB) để lưu trực tiếp vào hệ thống. Vui lòng nén nhỏ file PDF trước (hoặc chụp/scan lại thành ảnh, ảnh sẽ tự động được nén nhỏ) rồi tải lên lại.'));
+          reject(new Error('File PDF quá lớn (' + (file.size/1024/1024).toFixed(1) + 'MB, tối đa ~3MB) để lưu trực tiếp vào hệ thống. Vui lòng nén nhỏ file PDF trước (hoặc chụp/scan lại thành ảnh, ảnh sẽ tự động được nén nhỏ) rồi tải lên lại.'));
           return;
         }
         const reader = new FileReader();
@@ -434,7 +456,7 @@
           // -> vẫn lưu file gốc nếu đủ nhỏ, bỏ qua bước nén/kiểm tra mờ — nhưng vẫn phải chặn nếu quá to,
           // tránh lỗi khó hiểu giữa chừng lúc lưu (cùng lý do với PDF ở trên).
           if (file.size > PDF_RAW_LIMIT){
-            reject(new Error('File này (' + (file.size/1024/1024).toFixed(1) + 'MB) không đọc được thành ảnh và quá lớn (tối đa ~0.7MB) để lưu trực tiếp. Vui lòng chụp lại bằng ảnh JPG/PNG thông thường (sẽ tự động được nén nhỏ) rồi tải lên lại.'));
+            reject(new Error('File này (' + (file.size/1024/1024).toFixed(1) + 'MB) không đọc được thành ảnh và quá lớn (tối đa ~3MB) để lưu trực tiếp. Vui lòng chụp lại bằng ảnh JPG/PNG thông thường (sẽ tự động được nén nhỏ) rồi tải lên lại.'));
             return;
           }
           resolve({ dataUrl: e.target.result, type: 'file', name: file.name });
@@ -446,6 +468,11 @@
     });
   }
 
+  // Danh sách gợi ý (datalist) cho ô "Nơi cấp CCCD" — vẫn cho gõ tự do, chỉ gợi ý nhanh
+  // theo danh mục Admin đã cấu hình tại Cài đặt → Danh mục dữ liệu.
+  function noiCapCccdDatalistHtml(listId){
+    return `<datalist id="${listId}">${NOI_CAP_CCCD_LIST().map(v=>`<option value="${v}"></option>`).join('')}</datalist>`;
+  }
   function fmtDate(d){ if(!d) return "—"; const dt = new Date(d); if(isNaN(dt)) return d; return dt.toLocaleDateString("vi-VN"); }
   function fmtDateRange(from, to){ if(!from && !to) return "—"; if(to && to!==from) return fmtDate(from) + " – " + fmtDate(to); return fmtDate(from||to); }
   function todayISO(){ return new Date().toISOString().slice(0,10); }
@@ -502,6 +529,7 @@
       const cfg = await window.storage.get('system_config', true);
       state.config = cfg ? JSON.parse(cfg.value) : { adminPin: "0000", units: [] };
     } catch(e){ state.config = { adminPin: "0000", units: [] }; }
+    ensureDanhMuc();
     try {
       const emp = await window.storage.get('employees', true);
       state.employees = emp ? JSON.parse(emp.value) : [];
@@ -959,7 +987,7 @@
           </div>
           <div class="row-flex">
             <div class="field"><label>Ngày cấp CCCD</label><input id="hv-reg-ngayCapCccd" type="date" /></div>
-            <div class="field"><label>Nơi cấp CCCD</label><input id="hv-reg-noiCapCccd" placeholder="VD: Cục Cảnh sát QLHC về TTXH" /></div>
+            <div class="field"><label>Nơi cấp CCCD</label><input id="hv-reg-noiCapCccd" list="dl-noicap-reg" placeholder="VD: Cục Cảnh sát QLHC về TTXH" />${noiCapCccdDatalistHtml('dl-noicap-reg')}</div>
           </div>
           <div class="field"><label>Số điện thoại</label><input id="hv-reg-soDt" /></div>
           <div class="field"><label>Đặt mã xác nhận (như mật khẩu) *</label><input id="hv-reg-pin" type="password" autocomplete="new-password" data-lpignore="true" data-1p-ignore /></div>
@@ -995,8 +1023,8 @@
               noiCapCccd: document.getElementById('hv-reg-noiCapCccd').value.trim(),
               soDienThoai: document.getElementById('hv-reg-soDt').value.trim(),
               pin,
-              chucDanhDangKy: CHUC_DANH[0], trinhDoDaoTao: TRINH_DO[0],
-              donViCuTri:'', loaiHinhThucHanh: LOAI_HINH_THUC_HANH[0], mucDichThucHanh:'',
+              chucDanhDangKy: CHUC_DANH_LIST()[0], trinhDoDaoTao: TRINH_DO_LIST()[0],
+              donViCuTri:'', loaiHinhThucHanh: LOAI_HINH_THUC_HANH_LIST()[0], mucDichThucHanh:'',
               tuNgayDeNghi:'', soThangDangKy:'', denNgayDeNghi:'', nguoiLienHe:'', ghiChuHoSo:'',
               trangThaiHoSo: TRANG_THAI_HO_SO_HV[0], trangThaiPheDuyet: TRANG_THAI_PHE_DUYET_HV[0],
               ngayTiepNhan:'', soVanBanTiepNhan:'',
@@ -1599,7 +1627,7 @@
       </div>
       <div class="row-flex">
         <div class="field"><label>Chức danh hành nghề</label>
-          <select id="m-chucdanh">${CHUC_DANH.map(c=>`<option ${emp&&emp.chucDanh===c?'selected':''}>${c}</option>`).join('')}</select>
+          <select id="m-chucdanh">${CHUC_DANH_LIST().map(c=>`<option ${emp&&emp.chucDanh===c?'selected':''}>${c}</option>`).join('')}</select>
         </div>
         <div class="field"><label>Chức vụ</label>
           <select id="m-chucvu">${CHUC_VU.map(c=>`<option ${(emp&&emp.chucVu||'Nhân viên')===c?'selected':''}>${c}</option>`).join('')}</select>
@@ -1607,7 +1635,7 @@
       </div>
       <div class="row-flex">
         <div class="field"><label>Trình độ chuyên môn</label>
-          <select id="m-trinhdo">${TRINH_DO.map(c=>`<option ${emp&&emp.trinhDoCM===c?'selected':''}>${c}</option>`).join('')}</select>
+          <select id="m-trinhdo">${TRINH_DO_LIST().map(c=>`<option ${emp&&emp.trinhDoCM===c?'selected':''}>${c}</option>`).join('')}</select>
         </div>
       </div>
       <div class="row-flex">
@@ -2537,17 +2565,17 @@
         </div>
         <div class="row-flex">
           <div class="field"><label>Ngày cấp CCCD</label><input id="kb-ngayCapCccd" type="date" value="${t.ngayCapCccd||''}" ${locked?'disabled':''} /></div>
-          <div class="field"><label>Nơi cấp CCCD</label><input id="kb-noiCapCccd" value="${t.noiCapCccd||''}" placeholder="VD: Cục Cảnh sát QLHC về TTXH" ${locked?'disabled':''} /></div>
+          <div class="field"><label>Nơi cấp CCCD</label><input id="kb-noiCapCccd" value="${t.noiCapCccd||''}" list="dl-noicap-kb" placeholder="VD: Cục Cảnh sát QLHC về TTXH" ${locked?'disabled':''} />${noiCapCccdDatalistHtml('dl-noicap-kb')}</div>
         </div>
         <div class="row-flex">
           <div class="field"><label>Chức danh đăng ký thực hành</label>
-            <select id="kb-chucDanh" ${locked?'disabled':''}>${CHUC_DANH.map(c=>`<option value="${c}" ${c===t.chucDanhDangKy?'selected':''}>${c}</option>`).join('')}</select>
+            <select id="kb-chucDanh" ${locked?'disabled':''}>${CHUC_DANH_LIST().map(c=>`<option value="${c}" ${c===t.chucDanhDangKy?'selected':''}>${c}</option>`).join('')}</select>
           </div>
           <div class="field"><label>Trình độ đào tạo</label>
-            <select id="kb-trinhDo" ${locked?'disabled':''}>${TRINH_DO.map(c=>`<option value="${c}" ${c===t.trinhDoDaoTao?'selected':''}>${c}</option>`).join('')}</select>
+            <select id="kb-trinhDo" ${locked?'disabled':''}>${TRINH_DO_LIST().map(c=>`<option value="${c}" ${c===t.trinhDoDaoTao?'selected':''}>${c}</option>`).join('')}</select>
           </div>
           <div class="field"><label>Loại hình thực hành</label>
-            <select id="kb-loaiHinh" ${locked?'disabled':''}>${LOAI_HINH_THUC_HANH.map(c=>`<option value="${c}" ${c===t.loaiHinhThucHanh?'selected':''}>${c}</option>`).join('')}</select>
+            <select id="kb-loaiHinh" ${locked?'disabled':''}>${LOAI_HINH_THUC_HANH_LIST().map(c=>`<option value="${c}" ${c===t.loaiHinhThucHanh?'selected':''}>${c}</option>`).join('')}</select>
           </div>
         </div>
         <div class="row-flex">
@@ -2932,6 +2960,7 @@
       { key:'hocvien', label:'🎓 Học viên thực hành (cấp GPHN)' },
       { key:'nhapexcel', label:'📥 Nhập danh sách từ Excel' },
       { key:'donvi', label:'🏢 Quản lý đơn vị' },
+      { key:'danhmuc', label:'📚 Danh mục dữ liệu' },
       { key:'caidat', label:'⚙️ Cài đặt' },
     ];
     if (isFullAccessRole(role)) allTabs.push({ key:'nguoidung', label:'👤 Quản lý người dùng' });
@@ -2973,6 +3002,7 @@
     if (state.tab === 'hocvien') renderAdminTrainees(content);
     if (state.tab === 'nhapexcel') renderAdminImport(content);
     if (state.tab === 'donvi') renderAdminUnits(content);
+    if (state.tab === 'danhmuc') renderAdminDanhMuc(content);
     if (state.tab === 'caidat') renderAdminSettings(content);
     if (state.tab === 'nguoidung' && isFullAccessRole(role)) renderAdminUsers(content);
   }
@@ -3228,9 +3258,8 @@
       "table.data th{background:#1f7a4d;color:#fff;font-weight:bold;} " +
       "@media print { table.data th{background:#fff !important;color:#000 !important;border:1px solid #000 !important;} } " +
       ".hd-org{text-align:center;font-weight:normal;font-size:12.5pt;line-height:1.35;white-space:nowrap;} " +
-      ".hd-line{width:40%;margin:3px auto 0 auto;border-bottom:1px solid #000;font-size:1pt;line-height:1pt;} " +
       ".hd-sub{font-weight:bold;text-transform:none;} " +
-      ".hd-line{display:inline-block;border-bottom:1px solid #000;width:38%;margin:4px 0;} " +
+      ".hd-underline{border-bottom:1px solid #000;padding-bottom:1px;} " +
       ".hd-quoc{text-align:center;font-weight:bold;font-size:11.5pt;line-height:1.35;white-space:nowrap;} " +
       ".hd-tieungu{font-weight:normal;text-decoration:underline;} " +
       ".hd-place{font-style:italic;font-weight:normal;margin-top:14px;display:block;text-align:center;} " +
@@ -3246,7 +3275,7 @@
     const headerHtml =
       '<table class="kv"><tr>' +
         '<td style="width:42%">' +
-          '<div class="hd-org">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br>TỈNH GIA LAI<br><span class="hd-sub">PHÒNG CHỈ ĐẠO TUYẾN</span><div class="hd-line">&nbsp;</div></div>' +
+          '<div class="hd-org">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br>TỈNH GIA LAI<br><span class="hd-sub hd-underline">PHÒNG CHỈ ĐẠO TUYẾN</span></div>' +
           '<div style="text-align:center"><hr align="center" width="55%" size="1" color="#000000" style="border:none;border-top:1px solid #000;width:55%;margin:6px auto"></div>' +
           '<div style="text-align:center;font-weight:normal">Số: ……/BC-CNKT</div>' +
         '</td>' +
@@ -4060,8 +4089,8 @@
   }
   function bvKhoaHeaderTableHtml(rightBlockHtml){
     return '<table class="kv"><tr>' +
-      '<td style="width:38%"><div class="hd-org">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br>TỈNH GIA LAI<br><span class="hd-sub">KHOA: ……………………………</span><div class="hd-line">&nbsp;</div></div></td>' +
-      '<td style="width:62%"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>' +
+      '<td style="width:42%"><div class="hd-org">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br>TỈNH GIA LAI<br><span class="hd-sub hd-underline">KHOA: ……………………………</span></div></td>' +
+      '<td style="width:58%"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>' +
         '<div style="text-align:center;font-weight:bold;text-decoration:underline">Độc lập - Tự do - Hạnh phúc</div>' +
         '<div style="text-align:center">-------------</div>' + rightBlockHtml + '</td>' +
       '</tr></table>';
@@ -4142,10 +4171,13 @@
     exportWordCustomDoc('SƠ YẾU LÝ LỊCH TỰ THUẬT', body, 'mau_so_yeu_ly_lich_tu_thuat.doc', { landscape:false });
   }
   function exportMauPhieuTiepNhan(){
-    const checkboxHtml = '<table border="1" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1pt solid #000000"><tr><td width="18" height="18" style="border:1pt solid #000000;background:#fff;text-align:center;vertical-align:middle;font-size:12pt;font-weight:bold;padding:0">&nbsp;</td></tr></table>';
+    // Dùng ký tự Unicode "☐" thay cho bảng lồng bảng — giống đúng cách đã dùng ổn định ở các
+    // văn bản khác trong hệ thống (Bản cam kết, Bản nhận xét): không bọc span/cỡ chữ riêng để
+    // tránh đổi kiểu hiển thị của ký tự (có font sẽ tô đen ô khi phóng cỡ chữ khác cỡ chữ gốc).
+    const checkboxHtml = '☐';
     const body = '<table style="border-collapse:collapse;width:100%"><tr>' +
-        '<td style="width:38%;vertical-align:top" valign="top" nowrap="nowrap"><div class="hd-org" style="font-size:11pt;white-space:nowrap" nowrap="nowrap">SỞ Y TẾ TỈNH GIA LAI<br><span class="hd-sub">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br>TỈNH GIA LAI</span><div class="hd-line">&nbsp;</div></div></td>' +
-        '<td style="width:62%;vertical-align:top" valign="top" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap" nowrap="nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>' +
+        '<td style="width:42%;vertical-align:top" valign="top" nowrap="nowrap"><div class="hd-org" style="font-size:11pt;white-space:nowrap" nowrap="nowrap">SỞ Y TẾ TỈNH GIA LAI<br><span class="hd-sub">BỆNH VIỆN ĐA KHOA TRUNG TÂM</span><br><span class="hd-sub hd-underline">TỈNH GIA LAI</span></div></td>' +
+        '<td style="width:58%;vertical-align:top" valign="top" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap" nowrap="nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>' +
           '<div style="text-align:center;font-weight:bold;text-decoration:underline">Độc lập - Tự do - Hạnh phúc</div></td>' +
       '</tr><tr>' +
         '<td style="text-align:center" nowrap="nowrap">Số: ………/PTNHSTH</td>' +
@@ -4175,8 +4207,8 @@
   function exportPhieuPhanCongIn(t, r, tenNguoiHuongDan, tenNguoiKy){
     const khoaTen = r.khoaTen || '';
     const body = '<table style="border-collapse:collapse;width:100%"><tr>' +
-        '<td style="width:38%;vertical-align:top" valign="top" nowrap="nowrap"><div class="hd-org" style="font-size:11pt;white-space:nowrap" nowrap="nowrap">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br>TỈNH GIA LAI<br><span class="hd-sub">KHOA: '+khoaTen+'</span><div class="hd-line">&nbsp;</div></div></td>' +
-        '<td style="width:62%;vertical-align:top" valign="top" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap" nowrap="nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>' +
+        '<td style="width:42%;vertical-align:top" valign="top" nowrap="nowrap"><div class="hd-org" style="font-size:11pt;white-space:nowrap" nowrap="nowrap">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br>TỈNH GIA LAI<br><span class="hd-sub hd-underline">KHOA: '+khoaTen+'</span></div></td>' +
+        '<td style="width:58%;vertical-align:top" valign="top" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap" nowrap="nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>' +
           '<div style="text-align:center;font-weight:bold;text-decoration:underline">Độc lập - Tự do - Hạnh phúc</div></td>' +
       '</tr><tr>' +
         '<td>&nbsp;</td>' +
@@ -4197,17 +4229,20 @@
     const docs = ensureTraineeDocs(t);
     const s = traineeDocsSummary(t);
     const pn = t.phieuTiepNhan || { ngayLap: todayISO(), ketQua: s.missing===0?'Đầy đủ':'Thiếu', danhSachThieu: s.missingNames };
+    // Dùng ký tự Unicode "☐/☒" — giống đúng cách đã chạy ổn định ở các văn bản khác trong hệ
+    // thống, không bọc span/cỡ chữ riêng để 2 trạng thái tích/chưa tích luôn đồng bộ kích thước
+    // và đều là nét đen trên nền trắng. Dùng "☒" (không phải "☑") vì một số bộ font khi hiển thị
+    // "☑" sẽ tự đổi thành icon tô đầy màu đen — "☒" cùng họ với "☐" nên giữ đúng kiểu viền hộp.
     const checkboxHtml = function(state2){
-      const mark = state2==='checked' ? '✓' : (state2==='na' ? '–' : '&nbsp;');
-      return '<table border="1" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1pt solid #000000"><tr><td width="18" height="18" style="border:1pt solid #000000;background:#fff;text-align:center;vertical-align:middle;font-size:12pt;font-weight:bold;padding:0">'+mark+'</td></tr></table>';
+      return state2==='checked' ? '☒' : (state2==='na' ? '–' : '☐');
     };
     const rows = '<table class="kv" style="margin-top:4px"><tbody>' + docs.map(d=>{
       const st = (d.trangThai==='Đã nộp') ? 'checked' : (d.trangThai==='Không áp dụng' ? 'na' : 'empty');
       return '<tr><td style="width:88%;padding:5px 0">'+d.ten+(d.batBuoc?'':' <i>(nếu có)</i>')+'</td><td style="width:12%;padding:5px 0;text-align:right">'+checkboxHtml(st)+'</td></tr>';
     }).join('') + '</tbody></table>';
     const body = '<table style="border-collapse:collapse;width:100%"><tr>' +
-        '<td style="width:38%;vertical-align:top" valign="top" nowrap="nowrap"><div class="hd-org" style="font-size:11pt;white-space:nowrap" nowrap="nowrap">SỞ Y TẾ TỈNH GIA LAI<br><span class="hd-sub">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br>TỈNH GIA LAI</span><div class="hd-line">&nbsp;</div></div></td>' +
-        '<td style="width:62%;vertical-align:top" valign="top" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap" nowrap="nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>' +
+        '<td style="width:42%;vertical-align:top" valign="top" nowrap="nowrap"><div class="hd-org" style="font-size:11pt;white-space:nowrap" nowrap="nowrap">SỞ Y TẾ TỈNH GIA LAI<br><span class="hd-sub">BỆNH VIỆN ĐA KHOA TRUNG TÂM</span><br><span class="hd-sub hd-underline">TỈNH GIA LAI</span></div></td>' +
+        '<td style="width:58%;vertical-align:top" valign="top" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap" nowrap="nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>' +
           '<div style="text-align:center;font-weight:bold;text-decoration:underline">Độc lập - Tự do - Hạnh phúc</div></td>' +
       '</tr><tr>' +
         '<td style="text-align:center" nowrap="nowrap">Số: ' + (pn.soPhieu || '………/PTNHSTH') + '</td>' +
@@ -4301,22 +4336,24 @@
       '<p><i>* Lưu ý: Một người hướng dẫn thực hành chỉ được hướng dẫn tối đa 5 người thực hành trong cùng một thời điểm.</i></p>';
   }
   function exportMauCongVanPhanCong(){
-    const body = '<table class="kv"><tr>' +
-        '<td style="width:38%"><div class="hd-org" style="font-size:11.5pt">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br>TỈNH GIA LAI<br><span class="hd-sub">PHÒNG CHỈ ĐẠO TUYẾN</span><div class="hd-line">&nbsp;</div></div></td>' +
-        '<td style="width:62%" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap" nowrap="nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>' +
-          '<div style="text-align:center;font-weight:bold;text-decoration:underline">Độc lập - Tự do - Hạnh phúc</div></td>' +
+    const body = '<table class="kv" style="table-layout:fixed"><colgroup><col style="width:42%"><col style="width:58%"></colgroup><tr>' +
+        '<td style="width:42%">' +
+          '<div class="hd-org" style="font-size:11pt;white-space:nowrap" nowrap="nowrap">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br><span class="hd-sub hd-underline">PHÒNG CHỈ ĐẠO TUYẾN</span></div>' +
+          '<div style="margin-top:8px;text-align:center">Số: ……………/BVĐKTT-CĐT<br>V/v Phân công học viên thực hành chuyên môn và người hướng dẫn thực hành tại khoa lâm sàng</div>' +
+        '</td>' +
+        '<td style="width:58%" nowrap="nowrap">' +
+          '<div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap" nowrap="nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>' +
+          '<div style="text-align:center;font-weight:bold;text-decoration:underline">Độc lập - Tự do - Hạnh phúc</div>' +
+          '<div class="hd-place">……………, ngày …. tháng …. năm ……</div>' +
+        '</td>' +
       '</tr></table>' +
-      '<p>Số: ……………/BVĐKTT-CĐT<br>V/v Phân công học viên thực hành chuyên môn và người hướng dẫn thực hành tại khoa lâm sàng</p>' +
-      '<p style="text-align:right;font-style:italic">……………, ngày …. tháng …. năm ……</p>' +
-      '<p>Kính gửi: Các khoa lâm sàng liên quan.</p>' +
-      congVanCanCuHtml() +
-      '<p>Nay, Phòng Chỉ đạo tuyến phân bổ học viên: ……………………………………………… (chức danh: ……………………) đến thực hành tại các khoa lâm sàng như sau:</p>' +
+      '<p style="text-align:center">Kính gửi: Các khoa lâm sàng liên quan.</p>' +
       Array(3).fill('<p>- Khoa ……………………………: …… tháng (từ ngày …………… đến ngày ……………);</p>').join('') +
       congVanTrachNhiemKhoaHtml() +
       '<p>Nhận được công văn này đề nghị các khoa thực hiện đúng quy định./.</p>' +
       '<table class="kv" style="margin-top:16px"><tr>' +
         '<td style="width:50%"><i>Nơi nhận:<br>- Như trên;<br>- Phòng TCCB, TCKT;<br>- Lưu: CĐT.</i></td>' +
-        '<td style="width:50%;text-align:center"><b>P. TRƯỞNG PHÒNG PHỤ TRÁCH</b><br><br><br><br><br></td>' +
+        '<td style="width:50%;text-align:center"><b>TRƯỞNG PHÒNG</b><br><br><br><br><br></td>' +
       '</tr></table>';
     exportWordCustomDoc('CÔNG VĂN PHÂN CÔNG HỌC VIÊN THỰC HÀNH VÀ NGƯỜI HƯỚNG DẪN', body, 'mau_cong_van_phan_cong_hoc_vien.doc', { landscape:false });
   }
@@ -4339,22 +4376,24 @@
     const rows = items.length
       ? items.map(s=>'<p>- Khoa '+(s.khoa||'')+': '+monthsDecimal(s.tuNgay,s.denNgay).toFixed(1)+' tháng (từ ngày '+fmtDate(s.tuNgay)+' đến ngày '+fmtDate(s.denNgay)+');</p>').join('')
       : '<p>- (Chưa có kế hoạch/giai đoạn thực hành nào)</p>';
-    const body = '<table class="kv"><tr>' +
-        '<td style="width:38%"><div class="hd-org" style="font-size:11.5pt">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br>TỈNH GIA LAI<br><span class="hd-sub">PHÒNG CHỈ ĐẠO TUYẾN</span><div class="hd-line">&nbsp;</div></div></td>' +
-        '<td style="width:62%" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap" nowrap="nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>' +
-          '<div style="text-align:center;font-weight:bold;text-decoration:underline">Độc lập - Tự do - Hạnh phúc</div></td>' +
+    const body = '<table class="kv" style="table-layout:fixed"><colgroup><col style="width:42%"><col style="width:58%"></colgroup><tr>' +
+        '<td style="width:42%">' +
+          '<div class="hd-org" style="font-size:11pt;white-space:nowrap" nowrap="nowrap">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br><span class="hd-sub hd-underline">PHÒNG CHỈ ĐẠO TUYẾN</span></div>' +
+          '<div style="margin-top:8px;text-align:center">Số: ' + (t.soCongVanPhanCong || '……………') + '/BVĐKTT-CĐT<br>V/v Phân công học viên thực hành chuyên môn và người hướng dẫn thực hành tại khoa lâm sàng</div>' +
+        '</td>' +
+        '<td style="width:58%" nowrap="nowrap">' +
+          '<div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap" nowrap="nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>' +
+          '<div style="text-align:center;font-weight:bold;text-decoration:underline">Độc lập - Tự do - Hạnh phúc</div>' +
+          '<div class="hd-place">Gia Lai, ' + vietnameseDateLong(todayISO()) + '</div>' +
+        '</td>' +
       '</tr></table>' +
-      '<p>Số: ' + (t.soCongVanPhanCong || '……………') + '/BVĐKTT-CĐT<br>V/v Phân công học viên thực hành chuyên môn và người hướng dẫn thực hành tại khoa lâm sàng</p>' +
-      '<p style="text-align:right;font-style:italic">Gia Lai, ' + vietnameseDateLong(todayISO()) + '</p>' +
-      '<p>Kính gửi: Các khoa lâm sàng liên quan.</p>' +
-      congVanCanCuHtml() +
-      '<p>Nay, Phòng Chỉ đạo tuyến phân bổ học viên: <b>' + (t.hoTen||'') + '</b> (chức danh: ' + (t.chucDanhDangKy||'') + ', mã hồ sơ: ' + (t.maHoSo||'—') + ') đến thực hành tại các khoa lâm sàng như sau:</p>' +
+      '<p style="text-align:center">Kính gửi: Các khoa lâm sàng liên quan.</p>' +
       rows +
       congVanTrachNhiemKhoaHtml() +
       '<p>Nhận được công văn này đề nghị các khoa thực hiện đúng quy định./.</p>' +
       '<table class="kv" style="margin-top:16px"><tr>' +
         '<td style="width:50%"><i>Nơi nhận:<br>- Như trên;<br>- Phòng TCCB, TCKT;<br>- Lưu: CĐT.</i></td>' +
-        '<td style="width:50%;text-align:center"><b>' + (state.adminUserName ? 'P. TRƯỞNG PHÒNG PHỤ TRÁCH<br>' + state.adminUserName : 'P. TRƯỞNG PHÒNG PHỤ TRÁCH') + '</b><br><br><br><br></td>' +
+        '<td style="width:50%;text-align:center"><b>TRƯỞNG PHÒNG</b><br><br><br><br></td>' +
       '</tr></table>';
     outputWordDoc(mode, 'CÔNG VĂN PHÂN CÔNG HỌC VIÊN THỰC HÀNH VÀ NGƯỜI HƯỚNG DẪN', body, 'cong_van_phan_cong_'+(t.hoTen||'').replace(/\s+/g,'_')+'.doc', { landscape:false });
   }
@@ -4387,7 +4426,7 @@
   }
   function giayGioiThieuBodyHtml(khoaTen, hoTen, ngaySinh, gioiTinh, chucDanh, trinhDo, donVi, cccd, dienThoai, noiDungTH, tuNgay, denNgay, qd, soGGT){
     return '<table class="kv"><tr>' +
-        '<td style="width:42%"><div class="hd-org" style="font-size:11pt">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br>TỈNH GIA LAI<br><span class="hd-sub">PHÒNG CHỈ ĐẠO TUYẾN</span><div class="hd-line">&nbsp;</div><span class="muted">Số: ' + (soGGT || '……………') + '/GGT-CĐT</span></div></td>' +
+        '<td style="width:42%"><div class="hd-org" style="font-size:11pt">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br>TỈNH GIA LAI<br><span class="hd-sub hd-underline">PHÒNG CHỈ ĐẠO TUYẾN</span><br><span class="muted">Số: ' + (soGGT || '……………') + '/GGT-CĐT</span></div></td>' +
         '<td style="width:58%" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap" nowrap="nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>' +
           '<div style="text-align:center;font-weight:bold;text-decoration:underline">Độc lập - Tự do - Hạnh phúc</div></td>' +
       '</tr></table>' +
@@ -4457,7 +4496,7 @@
   // ---- Giấy xác nhận hoàn thành quá trình thực hành (Phòng CĐT cấp khi kết thúc toàn bộ đợt) ----
   function giayXacNhanHoanThanhBodyHtml(hoTen, ngaySinh, trinhDo, rowsKhoaHtml, tongThang, tuNgay, denNgay, ketQua, canCuQuyetDinhHtml){
     return '<table class="kv"><tr>' +
-        '<td style="width:42%"><div class="hd-org" style="font-size:11pt">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br>TỈNH GIA LAI<br><span class="hd-sub">PHÒNG CHỈ ĐẠO TUYẾN</span><div class="hd-line">&nbsp;</div><span class="muted">Số: ……………/XN-CĐT</span></div></td>' +
+        '<td style="width:42%"><div class="hd-org" style="font-size:11pt">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br>TỈNH GIA LAI<br><span class="hd-sub hd-underline">PHÒNG CHỈ ĐẠO TUYẾN</span><br><span class="muted">Số: ……………/XN-CĐT</span></div></td>' +
         '<td style="width:58%" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap" nowrap="nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>' +
           '<div style="text-align:center;font-weight:bold;text-decoration:underline">Độc lập - Tự do - Hạnh phúc</div></td>' +
       '</tr></table>' +
@@ -4514,7 +4553,7 @@
   // ---- Bản nhận xét tổng hợp cuối khóa (Phòng CĐT tổng hợp toàn bộ quá trình thực hành) ----
   function banNhanXetTongHopBodyHtml(hoTen, ngaySinh, trinhDo, bangGiaiDoanHtml, tongThang, ghiChuNhanXet, ketLuanHtml, canCuQuyetDinhHtml){
     return '<table class="kv"><tr>' +
-        '<td style="width:42%"><div class="hd-org" style="font-size:11pt">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br>TỈNH GIA LAI<br><span class="hd-sub">PHÒNG CHỈ ĐẠO TUYẾN</span><div class="hd-line">&nbsp;</div><span class="muted">Số: ……………/NX-CĐT</span></div></td>' +
+        '<td style="width:42%"><div class="hd-org" style="font-size:11pt">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br>TỈNH GIA LAI<br><span class="hd-sub hd-underline">PHÒNG CHỈ ĐẠO TUYẾN</span><br><span class="muted">Số: ……………/NX-CĐT</span></div></td>' +
         '<td style="width:58%" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap" nowrap="nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>' +
           '<div style="text-align:center;font-weight:bold;text-decoration:underline">Độc lập - Tự do - Hạnh phúc</div></td>' +
       '</tr></table>' +
@@ -4565,8 +4604,8 @@
     const chuaKetThuc = stages.some(s=>s.trangThai!=='Đã kết thúc');
     const dieuKienDat = !chuaKetThuc && !coKetQuaXau && stages.length>0;
     const ketLuan = dieuKienDat
-      ? '<p><b>☑</b> Đủ điều kiện đề nghị cấp Giấy xác nhận hoàn thành quá trình thực hành.</p><p>☐ Chưa đủ điều kiện, lý do: …………………………………………………………………………</p>'
-      : '<p>☐ Đủ điều kiện đề nghị cấp Giấy xác nhận hoàn thành quá trình thực hành.</p><p><b>☑</b> Chưa đủ điều kiện, lý do: ' + (chuaKetThuc ? 'còn giai đoạn chưa kết thúc' : (coKetQuaXau ? 'có giai đoạn kết quả chưa đạt/đạt có điều kiện, cần bổ sung nhận xét' : '……………………………………………………………………')) + '</p>';
+      ? '<p><b>☒</b> Đủ điều kiện đề nghị cấp Giấy xác nhận hoàn thành quá trình thực hành.</p><p>☐ Chưa đủ điều kiện, lý do: …………………………………………………………………………</p>'
+      : '<p>☐ Đủ điều kiện đề nghị cấp Giấy xác nhận hoàn thành quá trình thực hành.</p><p><b>☒</b> Chưa đủ điều kiện, lý do: ' + (chuaKetThuc ? 'còn giai đoạn chưa kết thúc' : (coKetQuaXau ? 'có giai đoạn kết quả chưa đạt/đạt có điều kiện, cần bổ sung nhận xét' : '……………………………………………………………………')) + '</p>';
     const canCu = qd.soQD
       ? '<p style="font-style:italic">Căn cứ Quyết định số ' + qd.soQD + (qd.ngayKy ? ' ngày ' + fmtDate(qd.ngayKy) : '') + ' của Giám đốc Bệnh viện về việc phân công người hướng dẫn thực hành;</p>'
       : '<p style="font-style:italic;color:var(--red)">⚠ Chưa có số Quyết định phân công người hướng dẫn — vào mục "📜 Quyết định" để nhập Số QĐ/ngày ký trước khi trình bản nhận xét này.</p>';
@@ -5064,8 +5103,14 @@
             </div>
           </div>`;
         }
+        // PDF hoặc file không giải mã được thành ảnh (thường gặp nhất: ảnh chụp bằng iPhone ở định
+        // dạng HEIC mà trình duyệt không xem trước được) — trước đây chỉ hiện tên file, KHÔNG có
+        // cách nào để mở xem/tải về, nên bấm vào coi như "không có phản ứng gì". Nay luôn có nút mở.
+        const isPdf = f.type === 'pdf';
         return `<div style="border:1px solid var(--line);border-radius:6px;padding:8px">
-          <span class="pill gray">📄 ${f.name||'File'}</span>
+          <span class="pill gray">${isPdf?'📄':'🖼️'} ${f.name||(isPdf?'File PDF':'File')}</span>
+          <br><a href="${f.dataUrl}" target="_blank" rel="noopener" download="${f.name||'dinh-kem'}" style="display:inline-block;margin-top:4px;padding:5px 10px;font-size:12px;border:1px solid var(--line);border-radius:6px;color:var(--ink);text-decoration:none;background:#fff">👁 Mở / Tải xuống xem</a>
+          ${!isPdf ? '<div class="muted" style="font-size:11px;margin-top:2px">Ảnh định dạng trình duyệt không xem trước được (VD: HEIC từ iPhone) — bấm "Mở/Tải xuống" để xem bằng ứng dụng ảnh của máy.</div>' : ''}
           ${!readOnly ? `<br><button type="button" class="ghost small-btn" data-frm="${idx}" style="margin-top:4px">🗑️ Xoá</button>` : ''}
         </div>`;
       }).join('')}</div>`;
@@ -5144,10 +5189,11 @@
 
   function renderAdminTrainees(content){
     const hvView = state.hvView || 'list';
-    setUrlPath(hvView === 'stats' ? 'hocvien/thong-ke' : 'hocvien/danh-sach');
+    setUrlPath(hvView === 'stats' ? 'hocvien/thong-ke' : (hvView === 'bykhoa' ? 'hocvien/theo-khoa' : 'hocvien/danh-sach'));
     content.innerHTML = `
       <div class="row-flex" style="margin-bottom:14px">
         <button class="${hvView==='list'?'':'secondary'}" data-hv-view="list">📋 Danh sách học viên</button>
+        <button class="${hvView==='bykhoa'?'':'secondary'}" data-hv-view="bykhoa">🔗 Link phân công theo khoa</button>
         <button class="${hvView==='stats'?'':'secondary'}" data-hv-view="stats">📊 Thống kê tổng quan</button>
       </div>
       <div id="hv-view-wrap"></div>
@@ -5157,7 +5203,60 @@
     });
     const viewWrap = document.getElementById('hv-view-wrap');
     if (hvView === 'stats'){ renderTraineeStatsView(viewWrap); return; }
+    if (hvView === 'bykhoa'){ renderTraineeByKhoaView(viewWrap); return; }
     renderTraineeListView(viewWrap);
+  }
+
+  // ---- Tổng hợp đề nghị phân công đang chờ theo TỪNG KHOA (gộp mọi học viên của khoa đó vào
+  // 1 khoảng "từ ngày – đến ngày" và 1 link duy nhất) — để CĐT không phải mở từng học viên riêng
+  // lẻ chỉ để lấy đúng 1 link giống nhau gửi cho cùng 1 Trưởng khoa. ----
+  function renderTraineeByKhoaView(content){
+    const groups = {}; // khoaId -> { khoaTen, items:[{t,r}] }
+    (state.trainees||[]).forEach(t=>{
+      (t.deNghiPhanCongList||[]).forEach(r=>{
+        if (r.trangThai === 'Đã phân công') return; // đã xong, không cần gửi lại link
+        if (!r.khoaId) return;
+        if (!groups[r.khoaId]) groups[r.khoaId] = { khoaTen: r.khoaTen, items: [] };
+        groups[r.khoaId].items.push({ t, r });
+      });
+    });
+    const khoaIds = Object.keys(groups).sort((a,b)=> (groups[a].khoaTen||'').localeCompare(groups[b].khoaTen||''));
+    content.innerHTML = `
+      <div class="card">
+        <h3>🔗 Link phân công theo khoa (gộp mọi học viên đang chờ của cùng 1 khoa)</h3>
+        <p class="muted" style="margin-top:-6px">Mỗi khoa chỉ cần <b>1 link duy nhất</b> — Trưởng khoa mở ra sẽ thấy đủ TẤT CẢ học viên đang chờ khoa mình phân công (không phải 1 link/học viên như trước). Khoảng "Từ ngày – đến ngày" dưới đây là gộp từ ngày sớm nhất đến ngày muộn nhất trong số các học viên đang chờ của khoa.</p>
+      </div>
+      ${!khoaIds.length ? '<div class="card"><div class="empty">Hiện không có khoa nào đang chờ phân công.</div></div>' : ''}
+      ${khoaIds.map(khoaId=>{
+        const g = groups[khoaId];
+        const u = state.config.units.find(x=>x.id===khoaId);
+        const tuNgays = g.items.map(x=>x.r.tuNgay).filter(Boolean).sort();
+        const denNgays = g.items.map(x=>x.r.denNgay).filter(Boolean).sort();
+        const tuNgay = tuNgays[0] || '';
+        const denNgay = denNgays[denNgays.length-1] || '';
+        return `
+        <div class="card" data-khoa-card="${khoaId}">
+          <div style="font-size:15px"><b>🏥 ${g.khoaTen||'(Chưa rõ tên khoa)'}</b> <span class="pill amber">${g.items.length} học viên đang chờ</span></div>
+          <div class="muted" style="margin-top:2px">🗓️ Khoảng thời gian gộp: <b>${fmtDateRange(tuNgay, denNgay)}</b></div>
+          <ul style="margin:8px 0 0 0;padding-left:20px;font-size:13.5px">
+            ${g.items.map(({t,r})=>`<li>${t.hoTen||''} — ${fmtDateRange(r.tuNgay,r.denNgay)} (${r.soThang||''} tháng)</li>`).join('')}
+          </ul>
+          <div class="row-flex" style="margin-top:10px">
+            ${u ? `<button type="button" data-copy-khoa-link="${khoaId}">🔗 Copy 1 link duy nhất cho khoa này</button>` : `<span class="muted">⚠ Không tìm thấy đơn vị tương ứng trong danh mục Khoa/Phòng — kiểm tra lại tên khoa.</span>`}
+          </div>
+        </div>`;
+      }).join('')}
+    `;
+    content.querySelectorAll('[data-copy-khoa-link]').forEach(b=>{
+      b.onclick = async ()=>{
+        const khoaId = b.getAttribute('data-copy-khoa-link');
+        const u = state.config.units.find(x=>x.id===khoaId);
+        if (!u) return;
+        const url = window.location.origin + window.location.pathname + '?unit=' + encodeURIComponent(u.id) + '&pin=' + encodeURIComponent(u.pin) + '&tab=phancong';
+        try { await navigator.clipboard.writeText(url); showToast('Đã copy 1 link duy nhất cho khoa "'+u.name+'" — gửi Zalo/tin nhắn cho Trưởng khoa.'); }
+        catch(e){ prompt('Copy link dưới đây gửi cho khoa "'+u.name+'":', url); }
+      };
+    });
   }
 
   function renderTraineeStatsView(content){
@@ -5620,6 +5719,12 @@
       wrap.querySelectorAll('[data-view-hv]').forEach(b=>{
         b.onclick = ()=> openTraineeReadOnlyModal(b.getAttribute('data-view-hv'));
       });
+      wrap.querySelectorAll('[data-edit-hv]').forEach(b=>{
+        b.onclick = ()=>{
+          const t = state.trainees.find(x=>x.id===b.getAttribute('data-edit-hv'));
+          if (t) openTraineeFormModal(t);
+        };
+      });
       wrap.querySelectorAll('[data-docs-hv]').forEach(b=>{
         b.onclick = ()=> openTraineeDocsModal(b.getAttribute('data-docs-hv'));
       });
@@ -5663,18 +5768,33 @@
     refreshTable();
   }
 
-  function traineeQuickNavHtml(t){
+  // activeKey: 'sua' | 'hoso' | 'phankhoa' | 'quyetdinh' | 'xacnhan' — đánh dấu rõ màn hình đang mở
+  // để anh/chị thấy nút vừa bấm ĐÃ được kích hoạt (trước đây không có dấu hiệu này nên dễ tưởng
+  // bấm không ăn thua, nhất là khi bấm lại đúng nút của màn hình đang xem).
+  const TRAINEE_QN_ITEMS = [
+    { key:'sua', label:'✏️ Sửa hồ sơ' },
+    { key:'hoso', label:'📋 Hồ sơ' },
+    { key:'phankhoa', label:'🏥 Phân khoa' },
+    { key:'quyetdinh', label:'📜 Quyết định' },
+    { key:'xacnhan', label:'📜 Xác nhận' },
+  ];
+  function traineeQuickNavHtml(t, activeKey){
+    const btns = TRAINEE_QN_ITEMS.map(item=>{
+      const isActive = item.key === activeKey;
+      const style = isActive
+        ? 'background:linear-gradient(180deg, var(--navy-light), var(--navy));color:#fff;border-color:var(--navy);cursor:default'
+        : '';
+      return `<button type="button" class="ghost small-btn" data-qn="${item.key}" ${isActive?'data-qn-active="1"':''} style="${style}">${item.label}${isActive?' <span style="opacity:.85">(đang xem)</span>':''}</button>`;
+    }).join('');
     return `<div class="row-flex" style="flex-wrap:wrap;gap:6px;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--line);align-items:center">
       <span class="muted">Đang thao tác hồ sơ: <b>${t.hoTen||t.maHoSo||''}</b> —</span>
-      <button type="button" class="ghost small-btn" data-qn="sua">✏️ Sửa hồ sơ</button>
-      <button type="button" class="ghost small-btn" data-qn="hoso">📋 Hồ sơ</button>
-      <button type="button" class="ghost small-btn" data-qn="phankhoa">🏥 Phân khoa</button>
-      <button type="button" class="ghost small-btn" data-qn="quyetdinh">📜 Quyết định</button>
-      <button type="button" class="ghost small-btn" data-qn="xacnhan">📜 Xác nhận</button>
+      ${btns}
     </div>`;
   }
   function bindTraineeQuickNav(overlay, t){
     overlay.querySelectorAll('[data-qn]').forEach(btn=>{
+      // Nút của màn hình đang mở thì không cần bấm lại (tránh đóng/mở lại modal vô ích).
+      if (btn.getAttribute('data-qn-active')) return;
       btn.onclick = ()=>{
         const action = btn.getAttribute('data-qn');
         overlay.remove();
@@ -5747,7 +5867,7 @@
     const isEdit = !!t;
     const v = t || {
       hoTen:'', ngaySinh:'', cccd:'', chucDanhDangKy:'Chưa xác định', trinhDoDaoTao:'Chưa xác định',
-      donViCuTri:'', loaiHinhThucHanh: LOAI_HINH_THUC_HANH[0], mucDichThucHanh:'',
+      donViCuTri:'', loaiHinhThucHanh: LOAI_HINH_THUC_HANH_LIST()[0], mucDichThucHanh:'',
       tuNgayDeNghi:'', denNgayDeNghi:'', nguoiLienHe:'', soDienThoai:'', ghiChuHoSo:'',
       trangThaiHoSo: TRANG_THAI_HO_SO_HV[0], trangThaiPheDuyet: TRANG_THAI_PHE_DUYET_HV[0],
       ngayTiepNhan:'', soVanBanTiepNhan:'',
@@ -5757,7 +5877,7 @@
         <h3 style="margin:0">${isEdit ? 'Sửa hồ sơ học viên' : 'Tiếp nhận học viên thực hành mới'}</h3>
         <button type="button" class="secondary" id="hv-form-fullscreen" title="Phóng to toàn bộ cửa sổ này cho dễ xem">⛶ Phóng to giao diện</button>
       </div>
-      ${isEdit ? traineeQuickNavHtml(t) : ''}
+      ${isEdit ? traineeQuickNavHtml(t, 'sua') : ''}
       <div class="row-flex">
         <div class="field"><label>Họ và tên *</label><input id="hv-hoTen" value="${v.hoTen||''}" /></div>
         <div class="field"><label>Ngày sinh</label><input id="hv-ngaySinh" type="date" value="${v.ngaySinh||''}" /></div>
@@ -5772,7 +5892,7 @@
       </div>
       <div class="row-flex">
         <div class="field"><label>Ngày cấp CCCD</label><input id="hv-ngayCapCccd" type="date" value="${v.ngayCapCccd||''}" /></div>
-        <div class="field"><label>Nơi cấp CCCD</label><input id="hv-noiCapCccd" value="${v.noiCapCccd||''}" placeholder="VD: Cục Cảnh sát QLHC về TTXH" /></div>
+        <div class="field"><label>Nơi cấp CCCD</label><input id="hv-noiCapCccd" value="${v.noiCapCccd||''}" list="dl-noicap-hv" placeholder="VD: Cục Cảnh sát QLHC về TTXH" />${noiCapCccdDatalistHtml('dl-noicap-hv')}</div>
       </div>
       ${isEdit ? `<div class="card" style="background:#f8f7f1;margin-bottom:8px">
         <b>🔑 Mã xác nhận đăng nhập:</b> ${v.pin ? 'Học viên đã tự đặt mã riêng (khác mặc định).' : 'Đang dùng mặc định — 4 số cuối CCCD.'}
@@ -5780,13 +5900,13 @@
       </div>` : ''}
       <div class="row-flex">
         <div class="field"><label>Chức danh đăng ký thực hành</label>
-          <select id="hv-chucDanh">${CHUC_DANH.map(c=>`<option value="${c}" ${c===v.chucDanhDangKy?'selected':''}>${c}</option>`).join('')}</select>
+          <select id="hv-chucDanh">${CHUC_DANH_LIST().map(c=>`<option value="${c}" ${c===v.chucDanhDangKy?'selected':''}>${c}</option>`).join('')}</select>
         </div>
         <div class="field"><label>Trình độ đào tạo</label>
-          <select id="hv-trinhDo">${TRINH_DO.map(c=>`<option value="${c}" ${c===v.trinhDoDaoTao?'selected':''}>${c}</option>`).join('')}</select>
+          <select id="hv-trinhDo">${TRINH_DO_LIST().map(c=>`<option value="${c}" ${c===v.trinhDoDaoTao?'selected':''}>${c}</option>`).join('')}</select>
         </div>
         <div class="field"><label>Loại hình thực hành</label>
-          <select id="hv-loaiHinh">${LOAI_HINH_THUC_HANH.map(c=>`<option value="${c}" ${c===v.loaiHinhThucHanh?'selected':''}>${c}</option>`).join('')}</select>
+          <select id="hv-loaiHinh">${LOAI_HINH_THUC_HANH_LIST().map(c=>`<option value="${c}" ${c===v.loaiHinhThucHanh?'selected':''}>${c}</option>`).join('')}</select>
         </div>
       </div>
       <div class="row-flex">
@@ -5941,7 +6061,7 @@
         <h3 style="margin:0">Hồ sơ đính kèm — ${t.hoTen}</h3>
         <button class="secondary" id="hv-docs-fullscreen" title="Phóng to toàn bộ cửa sổ này cho dễ xem">⛶ Phóng to giao diện</button>
       </div>
-      ${traineeQuickNavHtml(t)}
+      ${traineeQuickNavHtml(t, 'hoso')}
       <p class="muted" style="margin-top:-6px">Đối chiếu theo Phụ lục 1 — danh mục giấy tờ hành chính học viên nộp khi đăng ký. Cập nhật trạng thái ngay khi nhận được từng giấy tờ.</p>
       <p class="muted" style="margin-top:-4px;font-style:italic">💡 Học viên có thể tự đính kèm các giấy tờ này trong tab "📝 Khai báo hồ sơ" của họ (bất kỳ lúc nào trước khi hồ sơ được duyệt), hoặc Phòng CĐT đính kèm thay ngay tại đây khi nhận trực tiếp bản giấy. Cả hai đều cùng một hồ sơ — không có thư mục riêng, file được lưu thẳng trong hồ sơ của học viên và xem lại được bất cứ lúc nào bằng nút 📎/🔍 bên dưới.</p>
       <div class="row-flex" style="margin-bottom:10px">
@@ -6144,7 +6264,7 @@
         <h3 style="margin:0">📜 Quyết định phân công thực hành — ${t.hoTen}</h3>
         <button type="button" class="secondary" id="qd-fullscreen" title="Phóng to toàn bộ cửa sổ này cho dễ xem">⛶ Phóng to giao diện</button>
       </div>
-      ${traineeQuickNavHtml(t)}
+      ${traineeQuickNavHtml(t, 'quyetdinh')}
       <p class="muted" style="margin-top:-6px">Sau khi Giám đốc đã ký quyết định, đính kèm bản quét/ảnh quyết định vào hồ sơ học viên tại đây. Có thể nhập kèm số QĐ/ngày ký để tiện tra cứu, hoặc xuất bản dự thảo Quyết định + Phụ lục để trình ký nếu chưa có.</p>
       <div class="card" style="background:#f8f7f1">
         <h3 style="font-size:14px">Thông tin tự động lấy từ hồ sơ học viên</h3>
@@ -6372,7 +6492,7 @@
       '<th style="width:5%">STT</th><th style="width:20%">Họ và tên người hướng dẫn</th><th style="width:14%">Khoa/ phòng</th><th style="width:16%">Trình độ chuyên môn</th><th style="width:15%">Số chứng chỉ hành nghề</th><th style="width:13%">Ngày cấp CCHN</th><th style="width:17%">Xác nhận của Trưởng khoa</th>' +
       '</tr></thead><tbody>' + filledRow + blankRows + '</tbody></table>';
     const headerHtml = '<table class="kv"><tr>' +
-        '<td style="width:42%"><div class="hd-org">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br>TỈNH GIA LAI<br><span class="hd-sub">PHÒNG CHỈ ĐẠO TUYẾN</span><div class="hd-line">&nbsp;</div></div></td>' +
+        '<td style="width:42%"><div class="hd-org">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br>TỈNH GIA LAI<br><span class="hd-sub hd-underline">PHÒNG CHỈ ĐẠO TUYẾN</span></div></td>' +
         '<td style="width:58%"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap" nowrap="nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT&nbsp;NAM</div><div style="text-align:center;font-weight:normal;text-decoration:underline">Độc lập&nbsp;-&nbsp;Tự do&nbsp;-&nbsp;Hạnh phúc</div></td>' +
       '</tr></table>' +
       '<div class="doc-title">PHỤ LỤC<br>DANH SÁCH ĐĂNG KÝ NGƯỜI HƯỚNG DẪN THỰC HÀNH</div>' +
@@ -6427,7 +6547,7 @@
     const ngayHieuLuc = qd.ngayKy ? fmtDate(nextDayISO(qd.ngayKy)) : '……';
     const body =
       '<table class="kv"><tr>' +
-        '<td style="width:50%"><div class="hd-org">SỞ Y TẾ TỈNH GIA LAI<br><span class="hd-sub">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br>TỈNH GIA LAI</span><div class="hd-line">&nbsp;</div></div></td>' +
+        '<td style="width:50%"><div class="hd-org">SỞ Y TẾ TỈNH GIA LAI<br><span class="hd-sub">BỆNH VIỆN ĐA KHOA TRUNG TÂM</span><br><span class="hd-sub hd-underline">TỈNH GIA LAI</span></div></td>' +
         '<td style="width:50%"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap" nowrap="nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT&nbsp;NAM</div><div style="text-align:center;font-weight:normal;text-decoration:underline">Độc lập&nbsp;-&nbsp;Tự do&nbsp;-&nbsp;Hạnh phúc</div></td>' +
       '</tr></table>' +
       '<table class="kv" style="margin-top:6px"><tr>' +
@@ -6467,7 +6587,7 @@
       || '<tr><td colspan="4" style="text-align:center">Chưa có người hướng dẫn nào đang hoạt động trong kỳ.</td></tr>';
     const body =
       '<table class="kv"><tr>' +
-        '<td style="width:50%"><div class="hd-org">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br>TỈNH GIA LAI<br><span class="hd-sub">PHÒNG CHỈ ĐẠO TUYẾN</span><div class="hd-line">&nbsp;</div></div></td>' +
+        '<td style="width:50%"><div class="hd-org">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br>TỈNH GIA LAI<br><span class="hd-sub hd-underline">PHÒNG CHỈ ĐẠO TUYẾN</span></div></td>' +
         '<td style="width:50%"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap" nowrap="nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT&nbsp;NAM</div><div style="text-align:center;font-weight:normal;text-decoration:underline">Độc lập&nbsp;-&nbsp;Tự do&nbsp;-&nbsp;Hạnh phúc</div></td>' +
       '</tr></table>' +
       '<table class="kv" style="margin-top:6px"><tr>' +
@@ -6508,7 +6628,7 @@
   function exportMauQuyetDinhGiamDoc(){
     const body =
       '<table class="kv"><tr>' +
-        '<td style="width:50%"><div class="hd-org">SỞ Y TẾ TỈNH GIA LAI<br><span class="hd-sub">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br>TỈNH GIA LAI</span><div class="hd-line">&nbsp;</div></div></td>' +
+        '<td style="width:50%"><div class="hd-org">SỞ Y TẾ TỈNH GIA LAI<br><span class="hd-sub">BỆNH VIỆN ĐA KHOA TRUNG TÂM</span><br><span class="hd-sub hd-underline">TỈNH GIA LAI</span></div></td>' +
         '<td style="width:50%"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap" nowrap="nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT&nbsp;NAM</div><div style="text-align:center;font-weight:normal;text-decoration:underline">Độc lập&nbsp;-&nbsp;Tự do&nbsp;-&nbsp;Hạnh phúc</div></td>' +
       '</tr></table>' +
       '<table class="kv" style="margin-top:6px"><tr>' +
@@ -6561,7 +6681,7 @@
   }
   function exportMauPhuLucDangKyNHD(){
     const headerHtml = '<table class="kv"><tr>' +
-        '<td style="width:42%"><div class="hd-org">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br>TỈNH GIA LAI<br><span class="hd-sub">PHÒNG CHỈ ĐẠO TUYẾN</span><div class="hd-line">&nbsp;</div></div></td>' +
+        '<td style="width:42%"><div class="hd-org">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br>TỈNH GIA LAI<br><span class="hd-sub hd-underline">PHÒNG CHỈ ĐẠO TUYẾN</span></div></td>' +
         '<td style="width:58%"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap" nowrap="nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT&nbsp;NAM</div><div style="text-align:center;font-weight:normal;text-decoration:underline">Độc lập&nbsp;-&nbsp;Tự do&nbsp;-&nbsp;Hạnh phúc</div></td>' +
       '</tr></table>' +
       '<div class="doc-title">PHỤ LỤC<br>DANH SÁCH ĐĂNG KÝ NGƯỜI HƯỚNG DẪN THỰC HÀNH</div>' +
@@ -6591,11 +6711,11 @@
       "table.data th{background:#1f7a4d;color:#fff;font-weight:bold;text-align:center;} " +
       "@media print { table.data th{background:#fff !important;color:#000 !important;border:1px solid #000 !important;} } " +
       ".hd-org{text-align:center;font-weight:normal;font-size:12.5pt;line-height:1.35;white-space:nowrap;} " +
-      ".hd-line{width:40%;margin:3px auto 0 auto;border-bottom:1px solid #000;font-size:1pt;line-height:1pt;} " +
       ".hd-sub{font-weight:bold;text-transform:none;} " +
+      ".hd-underline{border-bottom:1px solid #000;padding-bottom:1px;} " +
       ".hd-quoc{text-align:center;font-weight:bold;font-size:11.5pt;line-height:1.35;white-space:nowrap;} " +
       ".hd-tieungu{font-weight:normal;text-decoration:underline;} " +
-      ".hd-place{font-style:italic;font-weight:normal;text-align:center;} " +
+      ".hd-place{font-style:italic;font-weight:normal;text-align:center;margin-top:8px;} " +
       ".doc-title{text-align:center;font-weight:bold;font-size:15pt;text-transform:uppercase;margin-top:16px;margin-bottom:2px;} " +
       ".doc-trichyeu{text-align:center;font-style:italic;margin-top:0;margin-bottom:6px;} " +
       ".sign-block{width:100%;border:none;margin-top:30px;} .sign-block td{border:none;text-align:center;font-weight:bold;vertical-align:top;}" +
@@ -6671,7 +6791,7 @@
         <h3 style="margin:0">Phân khoa & theo dõi thực hành — ${t.hoTen}</h3>
         <button type="button" class="secondary" id="pk-fullscreen" title="Phóng to toàn bộ cửa sổ này cho dễ xem">⛶ Phóng to giao diện</button>
       </div>
-      ${traineeQuickNavHtml(t)}
+      ${traineeQuickNavHtml(t, 'phankhoa')}
       <p class="muted" style="margin-top:-6px">Tổng số tháng đã phân khoa (đã lưu): <b id="hv-total-months">${totalMonthsSaved.toFixed(1)}</b> tháng</p>
       <div class="row-flex" style="margin-bottom:10px">
         <button type="button" class="secondary" id="pk-export-congvan">📄 Xuất Công văn phân công (gửi khoa)</button>
@@ -7305,7 +7425,7 @@
         <h3 style="margin:0">Xác nhận hoàn thành thực hành — ${t.hoTen}</h3>
         <button type="button" class="secondary" id="cf-fullscreen" title="Phóng to toàn bộ cửa sổ này cho dễ xem">⛶ Phóng to giao diện</button>
       </div>
-      ${traineeQuickNavHtml(t)}
+      ${traineeQuickNavHtml(t, 'xacnhan')}
       ${docSummary.missing > 0 ? `<div class="card" style="background:var(--red-bg);border-color:var(--red);margin-bottom:10px">
           <b style="color:var(--red)">⚠ Hồ sơ đính kèm còn thiếu ${docSummary.missing} mục bắt buộc:</b>
           <div class="muted" style="margin-top:4px">${docSummary.missingNames.join(', ')}</div>
@@ -7368,6 +7488,116 @@
       renderAdminApp();
       showToast('Đã xác nhận hoàn thành thực hành cho học viên.');
     };
+  }
+
+  // ---- Quản lý danh mục dữ liệu dùng chung (Chức danh đăng ký thực hành, Trình độ đào tạo,
+  // Loại hình thực hành, Nơi cấp CCCD) — chỉ Trưởng/Phó Trưởng phòng CĐT (toàn quyền) được sửa. ----
+  const DANH_MUC_DEFS = [
+    { key:'chucDanh', title:'Chức danh đăng ký hành nghề / thực hành', hint:'Dùng cho danh sách chức danh của nhân viên và của học viên thực hành.', getList: CHUC_DANH_LIST },
+    { key:'trinhDo', title:'Trình độ đào tạo / chuyên môn', hint:'Dùng cho hồ sơ nhân viên và hồ sơ học viên thực hành.', getList: TRINH_DO_LIST },
+    { key:'loaiHinh', title:'Loại hình thực hành', hint:'Dùng khi học viên đăng ký hồ sơ thực hành để cấp GPHN.', getList: LOAI_HINH_THUC_HANH_LIST },
+    { key:'noiCapCccd', title:'Nơi cấp CCCD (gợi ý nhanh)', hint:'Chỉ là danh sách GỢI Ý khi nhập liệu — vẫn có thể gõ tự do nếu không có trong danh sách.', getList: NOI_CAP_CCCD_LIST },
+  ];
+  function renderAdminDanhMuc(content){
+    if (!isFullAccessRole(state.adminRole)){
+      content.innerHTML = `<div class="card"><div class="empty">Chỉ Trưởng phòng / Phó Trưởng phòng Chỉ đạo tuyến (vai trò toàn quyền) mới có quyền cấu hình danh mục dữ liệu.</div></div>`;
+      return;
+    }
+    ensureDanhMuc();
+    content.innerHTML = `
+      <div class="card">
+        <h3>📚 Danh mục dữ liệu dùng chung</h3>
+        <p class="muted" style="margin-top:-6px">Các danh sách lựa chọn (dropdown) dưới đây do Phòng Chỉ đạo tuyến tự cấu hình — thêm/sửa/xoá/sắp xếp mà không cần sửa code. Thay đổi sẽ áp dụng ngay cho toàn bộ hệ thống.</p>
+      </div>
+      ${DANH_MUC_DEFS.map(d=>`
+        <div class="card" data-dm-card="${d.key}">
+          <h3 style="font-size:15px">${d.title}</h3>
+          <p class="muted" style="margin-top:-6px">${d.hint}</p>
+          <div id="dm-list-${d.key}"></div>
+          <div class="row-flex" style="margin-top:10px">
+            <div class="field" style="flex:2"><input id="dm-new-${d.key}" placeholder="Nhập giá trị mới rồi bấm Thêm..." /></div>
+            <button id="dm-add-${d.key}">➕ Thêm</button>
+          </div>
+        </div>
+      `).join('')}
+    `;
+    function refreshList(def){
+      const wrap = document.getElementById('dm-list-'+def.key);
+      const items = state.config.danhMuc[def.key];
+      wrap.innerHTML = `
+        <table>
+          <thead><tr><th style="width:50px">STT</th><th>Giá trị</th><th style="width:200px"></th></tr></thead>
+          <tbody>${items.map((v,i)=>`
+            <tr>
+              <td style="text-align:center">${i+1}</td>
+              <td><input data-dm-edit="${def.key}|${i}" value="${v.replace(/"/g,'&quot;')}" /></td>
+              <td style="white-space:nowrap">
+                <button class="ghost small-btn" data-dm-up="${def.key}|${i}" ${i===0?'disabled':''}>⬆️</button>
+                <button class="ghost small-btn" data-dm-down="${def.key}|${i}" ${i===items.length-1?'disabled':''}>⬇️</button>
+                <button class="ghost small-btn" data-dm-del="${def.key}|${i}">🗑️</button>
+              </td>
+            </tr>
+          `).join('') || `<tr><td colspan="3" style="text-align:center">Chưa có mục nào — danh sách mặc định của hệ thống đang được áp dụng.</td></tr>`}</tbody>
+        </table>
+      `;
+      wrap.querySelectorAll('[data-dm-edit]').forEach(inp=>{
+        inp.onchange = async ()=>{
+          const [key, idxStr] = inp.getAttribute('data-dm-edit').split('|');
+          const idx = parseInt(idxStr,10);
+          const val = inp.value.trim();
+          if (!val){ alert('Giá trị không được để trống.'); refreshList(def); return; }
+          state.config.danhMuc[key][idx] = val;
+          await saveConfig();
+          showToast('Đã cập nhật danh mục.');
+        };
+      });
+      wrap.querySelectorAll('[data-dm-up]').forEach(b=>{
+        b.onclick = async ()=>{
+          const [key, idxStr] = b.getAttribute('data-dm-up').split('|');
+          const idx = parseInt(idxStr,10);
+          const arr = state.config.danhMuc[key];
+          if (idx<=0) return;
+          [arr[idx-1], arr[idx]] = [arr[idx], arr[idx-1]];
+          await saveConfig();
+          refreshList(def);
+        };
+      });
+      wrap.querySelectorAll('[data-dm-down]').forEach(b=>{
+        b.onclick = async ()=>{
+          const [key, idxStr] = b.getAttribute('data-dm-down').split('|');
+          const idx = parseInt(idxStr,10);
+          const arr = state.config.danhMuc[key];
+          if (idx>=arr.length-1) return;
+          [arr[idx+1], arr[idx]] = [arr[idx], arr[idx+1]];
+          await saveConfig();
+          refreshList(def);
+        };
+      });
+      wrap.querySelectorAll('[data-dm-del]').forEach(b=>{
+        b.onclick = async ()=>{
+          const [key, idxStr] = b.getAttribute('data-dm-del').split('|');
+          const idx = parseInt(idxStr,10);
+          if (!confirm('Xoá mục này khỏi danh mục?')) return;
+          state.config.danhMuc[key].splice(idx,1);
+          await saveConfig();
+          refreshList(def);
+        };
+      });
+    }
+    DANH_MUC_DEFS.forEach(def=>{
+      refreshList(def);
+      document.getElementById('dm-add-'+def.key).onclick = async ()=>{
+        const inp = document.getElementById('dm-new-'+def.key);
+        const val = inp.value.trim();
+        if (!val){ alert('Vui lòng nhập giá trị.'); return; }
+        if (state.config.danhMuc[def.key].some(x=>x.toLowerCase()===val.toLowerCase())){ alert('Giá trị này đã có trong danh mục.'); return; }
+        state.config.danhMuc[def.key].push(val);
+        await saveConfig();
+        inp.value = '';
+        refreshList(def);
+        showToast('Đã thêm vào danh mục.');
+      };
+    });
   }
 
   function renderAdminUnits(content){
