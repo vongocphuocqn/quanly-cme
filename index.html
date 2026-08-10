@@ -286,6 +286,36 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     "Thực hành chuyển đổi chức danh chuyên môn",
     "Xin xác nhận quá trình thực hành",
   ];
+  const DINH_HUONG_CK_DEFAULT = [
+    "Chưa xác định",
+    "Nội tổng hợp",
+    "Ngoại tổng quát",
+    "Ngoại Tiết niệu",
+    "Ngoại Chấn thương chỉnh hình",
+    "Ung bướu",
+    "Sản",
+    "Nhi",
+    "Tai Mũi Họng",
+    "Răng Hàm Mặt",
+    "Gây mê Hồi sức",
+    "Khác",
+  ];
+  // Ánh xạ Định hướng chuyên khoa -> từ khoá tìm đúng Khoa trong danh mục Khoa/Phòng của bệnh viện,
+  // dùng để tự dự thảo lộ trình luân khoa 12 tháng riêng cho từng học viên (khung giống Phương án B
+  // trong Nghị định 96/2023/NĐ-CP: 2 tháng Nội + 1 tháng Ngoại + 5 tháng đúng chuyên khoa đăng ký +
+  // 1 tháng bổ trợ + 3 tháng Cấp cứu/HSTC = 12 tháng).
+  const SPECIALTY_ROTATION_MAP = {
+    "Nội tổng hợp":                    { search: ['nội tổng hợp','nội'] },
+    "Ngoại tổng quát":                 { search: ['ngoại tổng hợp','ngoại tổng quát'] },
+    "Ngoại Tiết niệu":                 { search: ['tiết niệu'] },
+    "Ngoại Chấn thương chỉnh hình":    { search: ['chấn thương','chỉnh hình'] },
+    "Ung bướu":                        { search: ['ung bướu'] },
+    "Sản":                             { search: ['phụ sản','sản'], boTro: ['nhi'] },
+    "Nhi":                             { search: ['nhi'] },
+    "Tai Mũi Họng":                    { search: ['tai mũi họng','tmh'] },
+    "Răng Hàm Mặt":                    { search: ['răng hàm mặt','rhm'] },
+    "Gây mê Hồi sức":                  { search: ['gây mê hồi sức','gây mê'] },
+  };
   // ---- Danh mục dùng chung, Admin có thể tự cấu hình (Cài đặt → Danh mục dữ liệu) ----
   // Trả về danh sách hiện hành từ state.config.danhMuc; nếu chưa có/rỗng thì dùng danh sách mặc định.
   function dmList(key, fallback){
@@ -297,6 +327,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
   function LOAI_HINH_THUC_HANH_LIST(){ return dmList('loaiHinh', LOAI_HINH_THUC_HANH_DEFAULT); }
   function NOI_CAP_CCCD_LIST(){ return dmList('noiCapCccd', NOI_CAP_CCCD_DEFAULT); }
   function MUC_DICH_TH_LIST(){ return dmList('mucDich', MUC_DICH_TH_DEFAULT); }
+  function DINH_HUONG_CK_LIST(){ return dmList('dinhHuongCK', DINH_HUONG_CK_DEFAULT); }
   // Đảm bảo state.config.danhMuc luôn tồn tại đủ danh mục (khởi tạo từ danh sách mặc định lần đầu).
   function ensureDanhMuc(){
     if (!state.config.danhMuc) state.config.danhMuc = {};
@@ -306,6 +337,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     if (!Array.isArray(dm.loaiHinh) || !dm.loaiHinh.length) dm.loaiHinh = LOAI_HINH_THUC_HANH_DEFAULT.slice();
     if (!Array.isArray(dm.noiCapCccd)) dm.noiCapCccd = NOI_CAP_CCCD_DEFAULT.slice();
     if (!Array.isArray(dm.mucDich) || !dm.mucDich.length) dm.mucDich = MUC_DICH_TH_DEFAULT.slice();
+    if (!Array.isArray(dm.dinhHuongCK) || !dm.dinhHuongCK.length) dm.dinhHuongCK = DINH_HUONG_CK_DEFAULT.slice();
+    if (!Array.isArray(state.config.rotationTemplates)) state.config.rotationTemplates = [];
   }
   const CHUC_VU = ["Nhân viên","Phó Trưởng khoa","Trưởng khoa","Phó Trưởng phòng","Trưởng phòng","Điều dưỡng trưởng","Phó Giám đốc","Giám đốc","Khác"];
   const ADMIN_ROLES = {
@@ -1405,6 +1438,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
               <div class="row-flex" style="margin-top:6px">
                 <button type="button" class="ghost small-btn" data-req-congvan="${r.id}">👁 Xem Công văn phân công học viên & người hướng dẫn (toàn bộ lộ trình)</button>
                 <button type="button" class="ghost small-btn" data-req-pldk="${r.id}">👁 Xem Phụ lục đăng ký người hướng dẫn (mẫu khoa điền & ký)</button>
+                <button type="button" class="ghost small-btn" data-req-khlk="${r.id}">📅 Xem Kế hoạch luân khoa (lịch cả 12 tháng của học viên)</button>
               </div>
             </div>
 
@@ -1466,6 +1500,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       btn.onclick = ()=>{
         const found = pendingItems.find(x=>x.r.id===btn.getAttribute('data-req-pldk'));
         if (found) exportPhuLucDangKyNHDFilled(found.t, found.r, 'preview');
+      };
+    });
+    content.querySelectorAll('[data-req-khlk]').forEach(btn=>{
+      btn.onclick = ()=>{
+        const found = pendingItems.find(x=>x.r.id===btn.getAttribute('data-req-khlk'));
+        if (found) exportKeHoachLuanKhoa(found.t, found.t.deNghiPhanCongList || [], 'preview');
       };
     });
     // Đồng bộ NGAY lựa chọn người hướng dẫn và tên người ký vào bộ nhớ (found.r) mỗi khi anh
@@ -2719,6 +2759,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           <div class="field"><label>Loại hình thực hành</label>
             <select id="kb-loaiHinh" ${locked?'disabled':''}>${LOAI_HINH_THUC_HANH_LIST().map(c=>`<option value="${c}" ${c===t.loaiHinhThucHanh?'selected':''}>${c}</option>`).join('')}</select>
           </div>
+          <div class="field"><label>Định hướng chuyên khoa sau khi hoàn thành</label>
+            <select id="kb-dinhHuongCK" ${locked?'disabled':''}>${DINH_HUONG_CK_LIST().map(c=>`<option value="${c}" ${c===t.dinhHuongChuyenKhoa?'selected':''}>${c}</option>`).join('')}</select>
+          </div>
         </div>
         <div class="row-flex">
           <div class="field" style="flex:2"><label>Đơn vị công tác / trường đào tạo cử đi</label><input id="kb-donVi" value="${t.donViCuTri||''}" ${locked?'disabled':''} /></div>
@@ -2784,6 +2827,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         chucDanhDangKy: content.querySelector('#kb-chucDanh').value,
         trinhDoDaoTao: content.querySelector('#kb-trinhDo').value,
         loaiHinhThucHanh: content.querySelector('#kb-loaiHinh').value,
+        dinhHuongChuyenKhoa: content.querySelector('#kb-dinhHuongCK').value,
         donViCuTri: content.querySelector('#kb-donVi').value.trim(),
         mucDichThucHanh: content.querySelector('#kb-mucDich').value.trim(),
         soThangDangKy: content.querySelector('#kb-soThang').value ? parseFloat(content.querySelector('#kb-soThang').value) : '',
@@ -4291,6 +4335,39 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         '<div style="text-align:center">-------------</div>' + rightBlockHtml + '</td>' +
       '</tr></table>';
   }
+  // ---- KẾ HOẠCH LUÂN KHOA — mẫu riêng gửi kèm sau khi Phòng CĐT lập/áp dụng kế hoạch phân bổ, để
+  // Khoa/Phòng xem nhanh đúng lịch cụ thể của 1 học viên (không phải văn bản hành chính có giá trị
+  // pháp lý như Công văn/Quyết định — chỉ là bảng tra cứu tiện dụng kèm theo). Đúng theo mẫu tham khảo
+  // do Phòng CĐT cung cấp: bảng 2 cột đầu trang (không phải kiểu quốc hiệu), rồi tới bảng lộ trình. ----
+  function keHoachLuanKhoaBody(t, rows){
+    const tongThang = rows.reduce((s,r)=>s+(parseFloat(r.soThang)||0),0);
+    const tuNgayDau = rows.length ? rows[0].tuNgay : '';
+    const denNgayCuoi = rows.length ? rows[rows.length-1].denNgay : '';
+    const chucDanh = (t.chucDanhDangKy||'……………………').toUpperCase();
+    const tableRows = rows.map((r,i)=>
+      '<tr><td style="text-align:center">'+(i+1)+'</td><td>'+(r.khoaTen||'……………………')+'</td>' +
+      '<td style="text-align:center">'+fmtDate(r.tuNgay)+'</td><td style="text-align:center">'+fmtDate(r.denNgay)+'</td>' +
+      '<td style="text-align:center">'+(parseFloat(r.soThang)||0).toFixed(1)+'</td><td></td></tr>'
+    ).join('');
+    return '<table class="kv" style="table-layout:fixed"><colgroup><col style="width:42%"><col style="width:58%"></colgroup><tr>' +
+        '<td style="width:42%;vertical-align:middle" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:11pt;white-space:nowrap" nowrap="nowrap">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br>PHÒNG CHỈ ĐẠO TUYẾN</div></td>' +
+        '<td style="width:58%;vertical-align:middle" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap" nowrap="nowrap">KẾ HOẠCH LUÂN KHOA</div>' +
+          '<div style="text-align:center;font-weight:bold;font-size:11pt;white-space:nowrap" nowrap="nowrap">ĐÀO TẠO THỰC HÀNH ĐỐI VỚI CHỨC DANH</div>' +
+          '<div style="text-align:center;font-weight:bold;font-size:11pt;white-space:nowrap" nowrap="nowrap">'+chucDanh+'</div></td>' +
+      '</tr></table>' +
+      '<p style="margin-top:14px">'+(t.chucDanhDangKy||'Học viên')+': <b>'+(t.hoTen||'……………………')+'</b> &nbsp;&nbsp;&nbsp; MSHV: <b>'+(t.maHoSo||'……………………')+'</b></p>' +
+      '<p>Thời gian: <b>'+tongThang.toFixed(1)+' tháng</b> (từ ngày <b>'+fmtDate(tuNgayDau)+'</b> đến ngày <b>'+fmtDate(denNgayCuoi)+'</b>)</p>' +
+      '<p>Đến thực hành tại khoa theo lịch cụ thể như sau:</p>' +
+      '<table class="data"><thead>' +
+        '<tr><th rowspan="2" style="width:6%">STT</th><th rowspan="2" style="width:24%">Khoa</th><th colspan="3">Thời gian</th><th rowspan="2" style="width:16%">Ghi chú</th></tr>' +
+        '<tr><th style="width:14%">Từ ngày</th><th style="width:14%">Đến ngày</th><th style="width:12%">Số tháng</th></tr>' +
+      '</thead><tbody>' + tableRows + '</tbody></table>' +
+      '<p style="text-align:right;font-style:italic;margin-top:16px">Gia Lai, ngày ..... tháng ..... năm .....</p>' +
+      '<p style="text-align:right;font-weight:bold">TRƯỞNG PHÒNG CHỈ ĐẠO TUYẾN</p>';
+  }
+  function exportKeHoachLuanKhoa(t, rows, mode){
+    outputWordDoc(mode||'download', 'KẾ HOẠCH LUÂN KHOA', keHoachLuanKhoaBody(t, rows), 'ke_hoach_luan_khoa_'+(t.hoTen||'').replace(/\s+/g,'_')+'.doc', { landscape:false });
+  }
   function exportMauDonDeNghi(){
     const body = quocHieuBlockHtml() +
       '<p style="text-align:right;font-style:italic;margin-top:6px">……………, ngày …. tháng …. năm ……</p>' +
@@ -5546,6 +5623,560 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     overlay.querySelector('#rs-loc').onclick = runFilter;
     runFilter();
   }
+  // ============================================================================================
+  // LẬP KẾ HOẠCH PHÂN BỔ HÀNG LOẠT — giải quyết đúng vấn đề: tiếp nhận nhiều học viên cùng đợt,
+  // hiện đang phân thủ công từng người theo lộ trình luân khoa (Nghị định 96) rất mất công, khó
+  // kiểm soát/khách quan, không kịp tiến độ. Luồng: chọn nhóm học viên → chọn/soạn 1 "Lộ trình
+  // luân khoa mẫu" (Khoa + số tháng từng khoa, do CHÍNH Phòng CĐT tự soạn đúng quy định — hệ thống
+  // KHÔNG tự suy đoán yêu cầu pháp lý cụ thể của từng chức danh) → hệ thống tự động DỰ THẢO áp
+  // dụng lộ trình đó cho từng người (có thể so le điểm bắt đầu để chia đều tải các khoa theo thời
+  // gian) → xem lại, loại bớt người chưa muốn áp dụng → bấm Áp dụng để tạo hàng loạt "Đề nghị
+  // phân công" gửi xuống các khoa (giống hệt cơ chế thủ công đang có, chỉ là tạo hàng loạt tự động).
+  // ============================================================================================
+  // ---- Lộ trình luân khoa mẫu dựng sẵn ĐÚNG THEO "Phụ lục I — Chương trình đào tạo thực hành"
+  // chính thức của bệnh viện (ban hành kèm Bản công bố .../BCB-BVĐKTT, căn cứ Thông tư 32/2023 &
+  // Nghị định 96/2023), mỗi chức danh 1 lộ trình riêng với đúng số tháng đã quy định — dùng số liệu
+  // NÀY thay vì phỏng đoán để đảm bảo công bằng, có căn cứ rõ ràng khi cần giải trình/kiểm tra.
+  // Với các mục "chọn 2-3 khoa trong nhóm Hồi sức cấp cứu" hoặc "chọn khoa trong 1 hệ" (Nội/Ngoại...),
+  // em chọn sẵn 1 phương án đại diện hợp lý (ghi rõ trong ghiChu) — Phòng CĐT có thể đổi khoa khác
+  // trong cùng nhóm ngay tại Bước 2 nếu muốn, miễn đúng tổng số tháng theo quy định.
+  const ROTATION_TEMPLATES_SEED = [
+    { ten: 'Bác sĩ Y khoa — 12 tháng (Phụ lục I mục A)', stages: [
+      { search: ['nội tổng hợp'], soThang: 2, ghiChu: 'Đại diện Hệ Nội — có thể đổi sang khoa Nội khác' },
+      { search: ['ngoại tổng hợp'], soThang: 2, ghiChu: 'Đại diện Hệ Ngoại — có thể đổi sang khoa Ngoại khác' },
+      { search: ['phụ sản','sản'], soThang: 2 },
+      { search: ['nhi'], soThang: 2, exact: ['nhi','nhi khoa'] },
+      { search: ['tai mũi họng','tmh'], soThang: 1, ghiChu: 'Chuyên khoa khác — có thể đổi sang Mắt/RHM/YHCT/PHCN/Da liễu' },
+      { search: ['cấp cứu'], soThang: 1, ghiChu: 'Hồi sức cấp cứu — xếp gần cuối lộ trình để học viên có nền tảng trước khi vào cấp cứu' },
+      { search: ['hstc','hồi sức tích cực','chống độc'], soThang: 2, ghiChu: 'Hồi sức cấp cứu — xếp cuối lộ trình' },
+    ]},
+    { ten: 'Bác sĩ Y học dự phòng — 12 tháng (Phụ lục I mục B)', stages: [
+      { search: ['nội tổng hợp'], soThang: 2, ghiChu: 'Đại diện Hệ Nội' },
+      { search: ['ngoại tổng hợp'], soThang: 2, ghiChu: 'Đại diện Hệ Ngoại' },
+      { search: ['phụ sản','sản'], soThang: 2 },
+      { search: ['nhi'], soThang: 2, exact: ['nhi','nhi khoa'] },
+      { search: ['tai mũi họng','tmh'], soThang: 1, ghiChu: 'Chuyên khoa khác' },
+      { search: ['cấp cứu'], soThang: 1, ghiChu: 'Hồi sức cấp cứu — xếp gần cuối lộ trình' },
+      { search: ['hstc','hồi sức tích cực','chống độc'], soThang: 2, ghiChu: 'Hồi sức cấp cứu — xếp cuối lộ trình' },
+    ]},
+    { ten: 'Bác sĩ Răng Hàm Mặt — 12 tháng (Phụ lục I mục C)', stages: [
+      { search: ['răng hàm mặt','rhm'], soThang: 9 },
+      { search: ['cấp cứu'], soThang: 1, ghiChu: 'Hồi sức cấp cứu — xếp cuối lộ trình' },
+      { search: ['hstc','hồi sức tích cực','chống độc'], soThang: 2, ghiChu: 'Hồi sức cấp cứu — xếp cuối lộ trình' },
+    ]},
+    { ten: 'Bác sĩ Y học cổ truyền — 12 tháng (Phụ lục I mục D)', stages: [
+      { search: ['y học cổ truyền','yhct'], soThang: 9 },
+      { search: ['cấp cứu'], soThang: 1, ghiChu: 'Hồi sức cấp cứu — xếp cuối lộ trình' },
+      { search: ['hstc','hồi sức tích cực','chống độc'], soThang: 2, ghiChu: 'Hồi sức cấp cứu — xếp cuối lộ trình' },
+    ]},
+    { ten: 'Y sĩ đa khoa — 9 tháng (Phụ lục I mục E)', stages: [
+      { search: ['nội tổng hợp'], soThang: 2, ghiChu: 'Đại diện Hệ Nội (gộp tròn từ 1,5 tháng)' },
+      { search: ['ngoại tổng hợp'], soThang: 1, ghiChu: 'Đại diện Hệ Ngoại (gộp tròn từ 1,5 tháng)' },
+      { search: ['phụ sản','sản'], soThang: 1 },
+      { search: ['nhi'], soThang: 1, exact: ['nhi','nhi khoa'] },
+      { search: ['tai mũi họng','tmh'], soThang: 1, ghiChu: 'Chuyên khoa khác' },
+      { search: ['cấp cứu'], soThang: 1, ghiChu: 'Hồi sức cấp cứu — xếp gần cuối lộ trình' },
+      { search: ['hstc','hồi sức tích cực','chống độc'], soThang: 2, ghiChu: 'Hồi sức cấp cứu — xếp cuối lộ trình' },
+    ]},
+    { ten: 'Y sĩ Y học cổ truyền — 9 tháng (Phụ lục I mục F)', stages: [
+      { search: ['y học cổ truyền','yhct'], soThang: 6 },
+      { search: ['cấp cứu'], soThang: 1, ghiChu: 'Hồi sức cấp cứu — xếp cuối lộ trình' },
+      { search: ['hstc','hồi sức tích cực','chống độc'], soThang: 2, ghiChu: 'Hồi sức cấp cứu — xếp cuối lộ trình' },
+    ]},
+    { ten: 'Điều dưỡng — 6 tháng (Phụ lục I mục G)', stages: [
+      { search: ['nội tổng hợp'], soThang: 2, ghiChu: 'Đại diện Hệ Nội (gộp tròn từ 1,25 tháng)' },
+      { search: ['ngoại tổng hợp'], soThang: 1, ghiChu: 'Đại diện Hệ Ngoại (gộp tròn từ 1,25 tháng)' },
+      { search: ['phụ sản','sản'], soThang: 1 },
+      { search: ['nhi'], soThang: 1, exact: ['nhi','nhi khoa'] },
+      { search: ['cấp cứu'], soThang: 1, ghiChu: 'Hồi sức cấp cứu — chỉ 1 khoa theo quy định, xếp cuối lộ trình' },
+    ]},
+    { ten: 'Hộ sinh — 6 tháng (Phụ lục I mục H)', stages: [
+      { search: ['phụ sản','sản'], soThang: 5 },
+      { search: ['cấp cứu'], soThang: 1, ghiChu: 'Hồi sức cấp cứu — chỉ 1 khoa, xếp cuối lộ trình' },
+    ]},
+    { ten: 'Kỹ thuật Y — Xét nghiệm y học — 6 tháng (Phụ lục I mục I.3.1)', stages: [
+      { search: ['xét nghiệm','sinh hóa'], soThang: 5, ghiChu: 'Khối xét nghiệm — có thể đổi sang Vi sinh/Huyết học-Truyền máu' },
+      { search: ['cấp cứu'], soThang: 1, ghiChu: 'Hồi sức cấp cứu — chỉ 1 khoa, xếp cuối lộ trình' },
+    ]},
+    { ten: 'Kỹ thuật Y — Phục hồi chức năng — 6 tháng (Phụ lục I mục I.3.2)', stages: [
+      { search: ['phục hồi chức năng','phcn'], soThang: 5 },
+      { search: ['cấp cứu'], soThang: 1, ghiChu: 'Hồi sức cấp cứu — chỉ 1 khoa, xếp cuối lộ trình' },
+    ]},
+    { ten: 'Kỹ thuật Y — Chẩn đoán hình ảnh — 6 tháng (Phụ lục I mục I.3.3)', stages: [
+      { search: ['chẩn đoán hình ảnh','cđha'], soThang: 5 },
+      { search: ['cấp cứu'], soThang: 1, ghiChu: 'Hồi sức cấp cứu — chỉ 1 khoa, xếp cuối lộ trình' },
+    ]},
+    { ten: 'Dược sĩ lâm sàng — 24 tháng (Phụ lục I mục K)', stages: [
+      { search: ['dược'], soThang: 24, ghiChu: 'Khoa Dược — kết hợp cùng một số khoa lâm sàng liên quan trong quá trình thực hành, không chia mốc tháng cố định theo văn bản' },
+    ]},
+  ];
+  // So khớp tên khoa THEO ĐÚNG TỪ (không chỉ "chứa chuỗi con") để tránh khớp nhầm — ví dụ tìm "nhi"
+  // không được phép khớp nhầm vào "Truyền nhiễm" (chữ "nhiễm" vô tình chứa đúng 3 ký tự n-h-i ở đầu).
+  function unitNameHasWord(name, word){
+    const words = (name||'').toLowerCase().split(/[\s\-\/,.()]+/).filter(Boolean);
+    return words.includes(word.toLowerCase());
+  }
+  function matchUnitByStage(units, stage){
+    // Nếu có khai báo "exact" (danh sách từ cần khớp ĐÚNG TỪ), ưu tiên dùng cách này trước — an toàn
+    // hơn hẳn so với .includes() vốn dễ dính chuỗi con không liên quan (VD "nhi" trong "nhiễm").
+    if (stage.exact){
+      for (const w of stage.exact){
+        const found = units.find(u=> unitNameHasWord(u.name, w));
+        if (found) return found;
+      }
+    }
+    for (const s of stage.search){
+      if (s === '__chon_tay__') return null;
+      const found = units.find(u=> (u.name||'').toLowerCase().includes(s));
+      if (found) return found;
+    }
+    return null;
+  }
+  function seedRotationTemplates(){
+    const units = state.config.units || [];
+    if (!state.config.rotationTemplates) state.config.rotationTemplates = [];
+    const report = [];
+    ROTATION_TEMPLATES_SEED.forEach(seed=>{
+      const khoaList = seed.stages.map(stage=>{
+        const u = matchUnitByStage(units, stage);
+        if (!u) report.push('"'+seed.ten+'": chưa tìm thấy khoa cho dòng "'+(stage.ghiChu||stage.search[0])+'" — cần tự chọn tay.');
+        return { khoaId: u ? u.id : '', khoaTen: u ? u.name : '', soThang: stage.soThang };
+      });
+      // Nếu đã có mẫu cùng tên trước đó thì cập nhật lại, không tạo trùng.
+      const existing = state.config.rotationTemplates.find(t=>t.ten===seed.ten);
+      if (existing) existing.khoaList = khoaList;
+      else state.config.rotationTemplates.push({ id: uid('tpl'), ten: seed.ten, khoaList });
+    });
+    return report;
+  }
+  // Tự suy ra lộ trình 12 tháng riêng cho 1 học viên dựa theo "Định hướng chuyên khoa" đã khai báo —
+  // dùng đúng khung Phương án B (NĐ 96/2023): 2 tháng Nội + 1 tháng Ngoại + 5 tháng đúng chuyên khoa
+  // đăng ký + 1 tháng bổ trợ + 3 tháng Cấp cứu/HSTC = 12 tháng. Trả về null nếu chưa xác định được
+  // (chưa khai báo định hướng, hoặc chọn "Khác"/"Chưa xác định").
+  function buildSpecialtyKhoaList(dinhHuong){
+    const map = SPECIALTY_ROTATION_MAP[dinhHuong];
+    if (!map) return null;
+    const units = state.config.units || [];
+    const stages = [
+      { search: ['nội tổng hợp','nội'], soThang: 2 },
+      { search: ['ngoại tổng hợp'], soThang: 1 },
+      { search: map.search, soThang: 5, isMain: true },
+      { search: map.boTro || ['phụ sản','sản'], soThang: 1 },
+      { search: ['cấp cứu'], soThang: 1, ghiChu: 'Hồi sức cấp cứu — xếp cuối lộ trình' },
+      { search: ['hstc','hồi sức tích cực','chống độc','icu'], soThang: 2, ghiChu: 'Hồi sức cấp cứu — xếp cuối lộ trình' },
+    ];
+    const warnings = [];
+    const khoaList = stages.map(st=>{
+      const u = matchUnitByStage(units, st);
+      if (!u) warnings.push('Không tìm thấy khoa cho "'+(st.isMain?dinhHuong+' (chuyên khoa chính)':st.search[0])+'".');
+      return { khoaId: u?u.id:'', khoaTen: u?u.name:'', soThang: st.soThang };
+    });
+    return { khoaList, warnings };
+  }
+  function openBulkPlanModal(content){
+    if (!isFullAccessRole(state.adminRole)){
+      alert('Chỉ Trưởng phòng / Phó Trưởng phòng Chỉ đạo tuyến (vai trò toàn quyền) mới được lập kế hoạch phân bổ hàng loạt.');
+      return;
+    }
+    ensureDanhMuc();
+    let step = 1; // 1 = chọn học viên + lộ trình, 2 = xem dự thảo
+    let selectedIds = new Set();
+    let draft = []; // [{ traineeId, hoTen, rows:[{khoaId,khoaTen,soThang,tuNgay,denNgay}], excluded:false }]
+    const overlay = el(`<div class="modal-overlay"><div class="modal" id="bp-modal" style="max-width:1000px">
+      <div class="row-flex" style="justify-content:space-between;align-items:flex-start">
+        <h3 style="margin:0">🗓️ Lập kế hoạch phân bổ hàng loạt (theo lộ trình luân khoa)</h3>
+        <button class="secondary" id="bp-fullscreen">⛶ Phóng to giao diện</button>
+      </div>
+      <div id="bp-body"></div>
+      <div class="row-flex" style="justify-content:flex-end;margin-top:10px">
+        <button class="secondary" id="bp-close">Đóng</button>
+      </div>
+    </div></div>`);
+    root.appendChild(overlay);
+    let bpIsFull = false;
+    overlay.querySelector('#bp-fullscreen').onclick = ()=>{
+      const m = overlay.querySelector('#bp-modal');
+      bpIsFull = !bpIsFull;
+      m.style.maxWidth = bpIsFull ? '98vw' : '1000px';
+      m.style.width = bpIsFull ? '98vw' : '';
+      m.style.maxHeight = bpIsFull ? '95vh' : '';
+      overlay.querySelector('#bp-fullscreen').textContent = bpIsFull ? '⛶ Thu nhỏ giao diện' : '⛶ Phóng to giao diện';
+    };
+    overlay.querySelector('#bp-close').onclick = ()=> overlay.remove();
+
+    // ---- danh sách khoa dùng chung cho phần chọn trong lộ trình ----
+    const unitOptions = (state.config.units||[]).slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+
+    function renderStep1(){
+      const body = overlay.querySelector('#bp-body');
+      // Học viên ứng viên: chưa có giai đoạn nào VÀ chưa có đề nghị phân công nào đang chờ/đã có —
+      // để tránh tạo trùng lặp với những người đã có kế hoạch riêng từ trước.
+      const candidates = state.trainees.filter(t=>
+        (!t.giaiDoan || !t.giaiDoan.length) && (!t.deNghiPhanCongList || !t.deNghiPhanCongList.length)
+      ).sort((a,b)=>(a.ngayTiepNhan||'').localeCompare(b.ngayTiepNhan||''));
+      body.innerHTML = `
+        <p class="muted" style="margin-top:6px">Chỉ hiện học viên <b>chưa có giai đoạn/đề nghị phân công nào</b> (tránh tạo trùng với kế hoạch đã có sẵn). Nếu không thấy học viên cần tìm, có thể học viên đó đã được phân công một phần rồi — vào "Phân khoa" của người đó để xử lý riêng.</p>
+        <div class="card">
+          <h3 style="font-size:14px">Bước 1 — Chọn nhóm học viên (cùng 1 đợt tiếp nhận)</h3>
+          <div class="row-flex">
+            <div class="field"><label>Lọc theo ngày tiếp nhận từ</label><input type="date" id="bp-f-tu" /></div>
+            <div class="field"><label>đến</label><input type="date" id="bp-f-den" /></div>
+            <div class="field"><label>Chức danh</label><select id="bp-f-chucdanh"><option value="">— Tất cả —</option>${CHUC_DANH_LIST().map(c=>`<option value="${c}">${c}</option>`).join('')}</select></div>
+            <button class="secondary" id="bp-f-apply" style="align-self:flex-end">🔎 Lọc</button>
+          </div>
+          <div class="row-flex" style="margin:6px 0">
+            <button class="ghost small-btn" id="bp-select-all">☑️ Chọn tất cả đang hiện</button>
+            <button class="ghost small-btn" id="bp-select-none">◻️ Bỏ chọn hết</button>
+            <span class="muted" id="bp-sel-count"></span>
+          </div>
+          <div id="bp-candidates" style="max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:6px"></div>
+        </div>
+        <div class="card">
+          <h3 style="font-size:14px">Bước 2 — Chọn hoặc soạn Lộ trình luân khoa mẫu</h3>
+          <p class="muted" style="margin-top:-6px">Danh sách Khoa + số tháng theo đúng thứ tự luân chuyển — Phòng CĐT tự soạn đúng theo quy định tại Nghị định 96/2023/NĐ-CP cho từng chức danh (hệ thống không tự suy đoán yêu cầu này). Lưu lại để dùng cho các đợt sau.</p>
+          <div class="row-flex">
+            <select id="bp-tpl-select" style="flex:2">
+              <option value="">— Soạn lộ trình mới —</option>
+              ${(state.config.rotationTemplates||[]).map(tpl=>`<option value="${tpl.id}">${tpl.ten} (${tpl.khoaList.reduce((s,k)=>s+parseFloat(k.soThang||0),0).toFixed(1)} tháng)</option>`).join('')}
+            </select>
+            <button class="secondary" id="bp-tpl-del">🗑️ Xoá mẫu đang chọn</button>
+          </div>
+          <div class="row-flex" style="margin-top:6px">
+            <button class="ghost small-btn" id="bp-tpl-seed">🎁 Nạp 12 lộ trình chuẩn theo Phụ lục I (đủ các chức danh: Bác sĩ, Y sĩ, Điều dưỡng, Hộ sinh, Kỹ thuật y, Dược sĩ...)</button>
+          </div>
+          <div class="field" style="margin-top:8px"><label>Tên lộ trình (để lưu lại dùng sau)</label><input id="bp-tpl-ten" placeholder="VD: Lộ trình chuẩn 12 tháng - Bác sĩ đa khoa" /></div>
+          <div id="bp-tpl-rows" style="margin-top:8px"></div>
+          <div class="row-flex" style="margin-top:8px">
+            <button class="ghost small-btn" id="bp-tpl-addrow">➕ Thêm dòng khoa</button>
+            <span class="muted" id="bp-tpl-total"></span>
+          </div>
+          <div class="row-flex" style="margin-top:8px">
+            <button class="secondary" id="bp-tpl-save">💾 Lưu lộ trình này để dùng lại</button>
+          </div>
+        </div>
+        <div class="card">
+          <h3 style="font-size:14px">Bước 3 — Ngày bắt đầu & cách chia</h3>
+          <div class="row-flex">
+            <div class="field"><label>Ngày bắt đầu tổ chức</label><input type="date" id="bp-startdate" value="${todayISO()}" /></div>
+            <label style="display:flex;align-items:center;gap:8px;margin-top:22px">
+              <input type="checkbox" id="bp-stagger" checked />
+              <span>So le điểm bắt đầu giữa các học viên, ưu tiên khoa đang ÍT học viên nhất trước (khuyến nghị — tự cân đối theo số lượng thực tế đang có ở từng khoa vào đúng ngày bắt đầu, tránh khoa này đông/khoa kia vắng)</span>
+            </label>
+          </div>
+          <label style="display:flex;align-items:center;gap:8px;margin-top:8px;cursor:pointer">
+            <input type="checkbox" id="bp-by-specialty" />
+            <span>🧬 Tự động chọn lộ trình theo <b>Định hướng chuyên khoa</b> đã khai báo của TỪNG học viên (bỏ qua lộ trình chung chọn ở Bước 2 — ai chưa khai báo định hướng thì vẫn dùng lộ trình chung đó làm dự phòng)</span>
+          </label>
+        </div>
+        <div class="row-flex" style="justify-content:flex-end">
+          <button id="bp-draft-btn">📝 Tạo dự thảo phân bổ</button>
+        </div>
+      `;
+      // ----- ứng viên list -----
+      function refreshCandidates(){
+        const tu = body.querySelector('#bp-f-tu').value;
+        const den = body.querySelector('#bp-f-den').value;
+        const cd = body.querySelector('#bp-f-chucdanh').value;
+        const filtered = candidates.filter(t=>{
+          if (tu && (!t.ngayTiepNhan || t.ngayTiepNhan < tu)) return false;
+          if (den && (!t.ngayTiepNhan || t.ngayTiepNhan > den)) return false;
+          if (cd && t.chucDanhDangKy !== cd) return false;
+          return true;
+        });
+        const box = body.querySelector('#bp-candidates');
+        box.innerHTML = filtered.length ? `
+          <table style="font-size:13px">
+            <thead><tr><th style="width:34px"></th><th>Họ và tên</th><th style="width:100px">Mã hồ sơ</th><th style="width:130px">Đối tượng</th><th style="width:110px">Ngày tiếp nhận</th></tr></thead>
+            <tbody>${filtered.map(t=>`
+              <tr>
+                <td style="text-align:center"><input type="checkbox" data-bp-cb="${t.id}" ${selectedIds.has(t.id)?'checked':''} /></td>
+                <td>${t.hoTen||''}</td>
+                <td>${t.maHoSo||''}</td>
+                <td><b style="${t.chucDanhDangKy && t.chucDanhDangKy!=='Chưa xác định' ? '' : 'color:var(--red)'}">${t.chucDanhDangKy||'Chưa xác định'}</b></td>
+                <td>${t.ngayTiepNhan?fmtDate(t.ngayTiepNhan):'chưa rõ'}</td>
+              </tr>
+            `).join('')}</tbody>
+          </table>
+        ` : '<div class="empty">Không có học viên phù hợp bộ lọc.</div>';
+        box.querySelectorAll('[data-bp-cb]').forEach(cb=>{
+          cb.onchange = ()=>{
+            const id = cb.getAttribute('data-bp-cb');
+            if (cb.checked) selectedIds.add(id); else selectedIds.delete(id);
+            body.querySelector('#bp-sel-count').textContent = selectedIds.size + ' học viên đã chọn';
+          };
+        });
+        body.querySelector('#bp-select-all').onclick = ()=>{ filtered.forEach(t=>selectedIds.add(t.id)); refreshCandidates(); body.querySelector('#bp-sel-count').textContent = selectedIds.size + ' học viên đã chọn'; };
+        body.querySelector('#bp-select-none').onclick = ()=>{ filtered.forEach(t=>selectedIds.delete(t.id)); refreshCandidates(); body.querySelector('#bp-sel-count').textContent = selectedIds.size + ' học viên đã chọn'; };
+      }
+      body.querySelector('#bp-f-apply').onclick = refreshCandidates;
+      refreshCandidates();
+      body.querySelector('#bp-sel-count').textContent = selectedIds.size + ' học viên đã chọn';
+
+      // ----- lộ trình mẫu -----
+      let tplRows = [{ khoaId:'', soThang:'' }];
+      function refreshTplRows(){
+        const wrap = body.querySelector('#bp-tpl-rows');
+        wrap.innerHTML = tplRows.map((r,i)=>`
+          <div class="row-flex" style="margin-bottom:6px" data-tpl-row="${i}">
+            <span class="muted" style="width:22px;text-align:center">${i+1}</span>
+            <select data-tpl-khoa="${i}" style="flex:2">
+              <option value="">— Chọn khoa —</option>
+              ${unitOptions.map(u=>`<option value="${u.id}" ${u.id===r.khoaId?'selected':''}>${u.name}</option>`).join('')}
+            </select>
+            <input type="number" step="0.5" min="0.5" data-tpl-thang="${i}" value="${r.soThang}" placeholder="Số tháng" style="width:110px" />
+            <button type="button" class="ghost small-btn" data-tpl-del="${i}">🗑️</button>
+          </div>
+        `).join('');
+        wrap.querySelectorAll('[data-tpl-khoa]').forEach(s=> s.onchange = ()=>{ tplRows[+s.getAttribute('data-tpl-khoa')].khoaId = s.value; });
+        wrap.querySelectorAll('[data-tpl-thang]').forEach(inp=> inp.oninput = ()=>{ tplRows[+inp.getAttribute('data-tpl-thang')].soThang = inp.value; updateTotal(); });
+        wrap.querySelectorAll('[data-tpl-del]').forEach(b=> b.onclick = ()=>{ tplRows.splice(+b.getAttribute('data-tpl-del'),1); if(!tplRows.length) tplRows=[{khoaId:'',soThang:''}]; refreshTplRows(); updateTotal(); });
+        updateTotal();
+      }
+      function updateTotal(){
+        const total = tplRows.reduce((s,r)=>s+(parseFloat(r.soThang)||0),0);
+        body.querySelector('#bp-tpl-total').textContent = 'Tổng cộng: ' + total.toFixed(1) + ' tháng';
+      }
+      refreshTplRows();
+      body.querySelector('#bp-tpl-addrow').onclick = ()=>{ tplRows.push({khoaId:'',soThang:''}); refreshTplRows(); };
+      body.querySelector('#bp-tpl-select').onchange = (e)=>{
+        const tpl = (state.config.rotationTemplates||[]).find(x=>x.id===e.target.value);
+        if (tpl){ tplRows = tpl.khoaList.map(k=>({khoaId:k.khoaId, soThang:k.soThang})); body.querySelector('#bp-tpl-ten').value = tpl.ten; }
+        else { tplRows = [{khoaId:'',soThang:''}]; body.querySelector('#bp-tpl-ten').value=''; }
+        refreshTplRows();
+      };
+      body.querySelector('#bp-tpl-seed').onclick = async ()=>{
+        const report = seedRotationTemplates();
+        await saveConfig();
+        renderStep1();
+        if (report.length){
+          alert('Đã nạp 12 lộ trình chuẩn theo Phụ lục I, nhưng còn '+report.length+' dòng chưa tự khớp được tên khoa trong danh mục Khoa/Phòng của bệnh viện — mở đúng lộ trình đó ở dropdown bên trên rồi tự chọn lại khoa cho dòng còn trống:\n\n'+report.join('\n'));
+        } else {
+          showToast('Đã nạp 12 lộ trình chuẩn theo Phụ lục I (khớp đủ tên khoa).');
+        }
+      };
+      body.querySelector('#bp-tpl-del').onclick = async ()=>{
+        const id = body.querySelector('#bp-tpl-select').value;
+        if (!id){ alert('Chưa chọn mẫu nào để xoá.'); return; }
+        if (!confirm('Xoá lộ trình mẫu này?')) return;
+        state.config.rotationTemplates = (state.config.rotationTemplates||[]).filter(x=>x.id!==id);
+        await saveConfig();
+        renderStep1();
+      };
+      body.querySelector('#bp-tpl-save').onclick = async ()=>{
+        const ten = body.querySelector('#bp-tpl-ten').value.trim();
+        if (!ten){ alert('Vui lòng đặt tên cho lộ trình để lưu lại.'); return; }
+        const validRows = tplRows.filter(r=>r.khoaId && parseFloat(r.soThang)>0);
+        if (!validRows.length){ alert('Chưa có dòng khoa hợp lệ nào (cần chọn khoa và số tháng > 0).'); return; }
+        const existingId = body.querySelector('#bp-tpl-select').value;
+        const khoaList = validRows.map(r=>({ khoaId:r.khoaId, khoaTen:(unitOptions.find(u=>u.id===r.khoaId)||{}).name||'', soThang:parseFloat(r.soThang) }));
+        if (!state.config.rotationTemplates) state.config.rotationTemplates = [];
+        if (existingId){
+          const tpl = state.config.rotationTemplates.find(x=>x.id===existingId);
+          if (tpl){ tpl.ten = ten; tpl.khoaList = khoaList; }
+        } else {
+          state.config.rotationTemplates.push({ id: uid('tpl'), ten, khoaList });
+        }
+        await saveConfig();
+        showToast('Đã lưu lộ trình luân khoa.');
+        renderStep1();
+      };
+
+      body.querySelector('#bp-draft-btn').onclick = ()=>{
+        if (!selectedIds.size){ alert('Chưa chọn học viên nào ở Bước 1.'); return; }
+        const validRows = tplRows.filter(r=>r.khoaId && parseFloat(r.soThang)>0);
+        if (!validRows.length){ alert('Lộ trình luân khoa chưa hợp lệ — cần ít nhất 1 dòng đủ Khoa + số tháng.'); return; }
+        const fallbackKhoaList = validRows.map(r=>({ khoaId:r.khoaId, khoaTen:(unitOptions.find(u=>u.id===r.khoaId)||{}).name||'', soThang:parseFloat(r.soThang) }));
+        const startDate = body.querySelector('#bp-startdate').value || todayISO();
+        const stagger = body.querySelector('#bp-stagger').checked;
+        const bySpecialty = body.querySelector('#bp-by-specialty').checked;
+        const traineeList = Array.from(selectedIds).map(id=>state.trainees.find(t=>t.id===id)).filter(Boolean);
+        const specialtyWarnings = [];
+        // Cân đối theo TẢI HIỆN TẠI thực tế của từng khoa (đang có bao nhiêu học viên khác ở đó vào
+        // đúng ngày bắt đầu dự kiến) — thay vì chia đều máy móc theo thứ tự mảng. Khoa nào đang ít
+        // người hơn sẽ được ưu tiên nhận học viên MỚI trước, tránh dồn khoa này nhiều/khoa kia ít.
+        function currentLoadAt(khoaId, dateRef){
+          let count = 0;
+          state.trainees.forEach(tr=>{
+            (tr.giaiDoan||[]).forEach(g=>{
+              if (g.khoaId===khoaId && g.tuNgay && g.tuNgay<=dateRef && (!g.denNgay || g.denNgay>=dateRef)) count++;
+            });
+          });
+          return count;
+        }
+        const loadOrder = fallbackKhoaList
+          .map((k,idx)=>({ idx, load: currentLoadAt(k.khoaId, startDate) }))
+          .sort((a,b)=> a.load - b.load)
+          .map(x=>x.idx);
+        draft = traineeList.map((t,i)=>{
+          let khoaList = fallbackKhoaList;
+          let usedSpecialty = false;
+          let offsetOrder = loadOrder;
+          if (bySpecialty){
+            const spec = buildSpecialtyKhoaList(t.dinhHuongChuyenKhoa);
+            if (spec){
+              khoaList = spec.khoaList;
+              usedSpecialty = true;
+              offsetOrder = null; // lộ trình riêng theo chuyên khoa — không dùng thứ tự cân tải chung
+              if (spec.warnings.length) specialtyWarnings.push(t.hoTen+' ('+t.dinhHuongChuyenKhoa+'): '+spec.warnings.join(' '));
+            }
+          }
+          const offset = stagger ? (offsetOrder ? offsetOrder[i % offsetOrder.length] : (i % khoaList.length)) : 0;
+          const seq = khoaList.slice(offset).concat(khoaList.slice(0, offset));
+          let cursor = startDate;
+          const rows = seq.map(k=>{
+            const tuNgay = cursor;
+            const denNgay = addMonthsDecimalToDate(tuNgay, k.soThang);
+            cursor = nextDayISO(denNgay);
+            return { khoaId:k.khoaId, khoaTen:k.khoaTen, soThang:k.soThang, tuNgay, denNgay };
+          });
+          return { traineeId: t.id, hoTen: t.hoTen, maHoSo: t.maHoSo, dinhHuong: usedSpecialty ? (t.dinhHuongChuyenKhoa||'') : '', rows, excluded: false };
+        });
+        step = 2;
+        renderStep2(specialtyWarnings);
+      };
+    }
+
+    let editingSet = new Set();
+    function recalcDatesForDraftStudent(d){
+      let cursor = (d.rows[0] && d.rows[0].tuNgay) || body_bp_startdate_fallback();
+      d.rows.forEach(r=>{
+        r.tuNgay = cursor;
+        r.denNgay = r.soThang>0 ? addMonthsDecimalToDate(cursor, r.soThang) : cursor;
+        cursor = nextDayISO(r.denNgay);
+      });
+    }
+    function body_bp_startdate_fallback(){
+      const el2 = overlay.querySelector('#bp-startdate');
+      return (el2 && el2.value) || todayISO();
+    }
+    function renderStep2(specialtyWarnings){
+      specialtyWarnings = specialtyWarnings || [];
+      const body = overlay.querySelector('#bp-body');
+      const totalThang = draft[0] ? draft[0].rows.reduce((s,r)=>s+r.soThang,0) : 0;
+      body.innerHTML = `
+        <div class="card" style="background:#eefaf0">
+          <h3 style="font-size:14px">📝 Dự thảo phân bổ — ${draft.length} học viên</h3>
+          <p class="muted" style="margin-top:-6px">Kiểm tra lại từng người — bỏ tick những ai CHƯA muốn áp dụng đợt này (vẫn tạo được sau, không mất dữ liệu). Bấm "✏️ Sửa" ở từng người để đổi khoa/số tháng/thêm-bớt dòng ngay tại đây trước khi áp dụng chính thức.</p>
+        </div>
+        ${specialtyWarnings.length ? `<div class="card" style="background:#fbf0dc"><p style="color:#7A5A00;font-size:12.5px;margin:0">⚠ Một số học viên có dòng chưa tự khớp được tên khoa theo định hướng chuyên khoa — kiểm tra lại dòng trống trong bảng bên dưới rồi tự chọn/sửa tay ở "Phân khoa" sau khi áp dụng:<br>${specialtyWarnings.join('<br>')}</p></div>` : ''}
+        <div style="max-height:55vh;overflow:auto">
+          ${draft.map((d,i)=>{
+            const isEditing = editingSet.has(i);
+            return `
+            <div class="card" style="margin-bottom:10px">
+              <div class="row-flex" style="justify-content:space-between;align-items:center;margin-bottom:6px">
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:0">
+                  <input type="checkbox" data-draft-cb="${i}" ${d.excluded?'':'checked'} />
+                  <b>${d.hoTen}</b> <span class="muted">(${d.maHoSo}${d.dinhHuong?' — định hướng: '+d.dinhHuong:''})</span>
+                </label>
+                <button type="button" class="ghost small-btn" data-draft-edit="${i}">${isEditing?'✅ Xong sửa':'✏️ Sửa'}</button>
+              </div>
+              <table style="font-size:12.5px">
+                <thead><tr><th style="width:40px">Tháng</th><th>Khoa thực hành</th><th style="width:110px">Từ ngày</th><th style="width:110px">Đến ngày</th><th style="width:${isEditing?'100px':'70px'}">Thời lượng</th>${isEditing?'<th style="width:36px"></th>':''}</tr></thead>
+                <tbody>${(()=>{ let m=1; return d.rows.map((r,j)=>{
+                  const from=m; m+=(r.soThang||0); const label = r.soThang===1 ? from : (from+'–'+Math.max(from,m-1));
+                  if (!isEditing){
+                    return `<tr><td style="text-align:center">${label}</td><td>${r.khoaTen||'<span style="color:var(--red)">[chưa chọn khoa]</span>'}</td><td style="text-align:center">${fmtDate(r.tuNgay)}</td><td style="text-align:center">${fmtDate(r.denNgay)}</td><td style="text-align:center">${r.soThang} tháng</td></tr>`;
+                  }
+                  return `<tr>
+                    <td style="text-align:center">${label}</td>
+                    <td><select data-edit-khoa="${i}-${j}">${unitOptions.map(u=>`<option value="${u.id}" ${u.id===r.khoaId?'selected':''}>${u.name}</option>`).join('')}</select></td>
+                    <td style="text-align:center">${fmtDate(r.tuNgay)}</td>
+                    <td style="text-align:center">${fmtDate(r.denNgay)}</td>
+                    <td><input type="number" step="0.5" min="0.5" data-edit-thang="${i}-${j}" value="${r.soThang}" style="width:70px" /></td>
+                    <td><button type="button" class="ghost small-btn" data-edit-delrow="${i}-${j}">🗑️</button></td>
+                  </tr>`;
+                }).join(''); })()}</tbody>
+              </table>
+              ${isEditing ? `<div class="row-flex" style="margin-top:6px"><button type="button" class="ghost small-btn" data-edit-addrow="${i}">➕ Thêm dòng khoa</button><span class="muted">Tổng: ${d.rows.reduce((s,r)=>s+(parseFloat(r.soThang)||0),0).toFixed(1)} tháng</span></div>` : ''}
+            </div>
+          `;}).join('')}
+        </div>
+        <div class="row-flex" style="justify-content:space-between;margin-top:12px">
+          <button class="secondary" id="bp-back">◀ Quay lại chỉnh lộ trình</button>
+          <div class="row-flex">
+            <button class="secondary" id="bp-export-kh" title="Xuất 1 file Word gộp — mỗi học viên 1 trang, gửi kèm cho các khoa xem lịch cụ thể">📝 Xuất Kế hoạch luân khoa (gửi kèm khoa)</button>
+            <button id="bp-apply">✅ Áp dụng — tạo đề nghị phân công cho tất cả</button>
+          </div>
+        </div>
+      `;
+      body.querySelectorAll('[data-draft-cb]').forEach(cb=>{
+        cb.onchange = ()=>{ draft[+cb.getAttribute('data-draft-cb')].excluded = !cb.checked; };
+      });
+      body.querySelectorAll('[data-draft-edit]').forEach(b=>{
+        b.onclick = ()=>{
+          const i = +b.getAttribute('data-draft-edit');
+          if (editingSet.has(i)) editingSet.delete(i); else editingSet.add(i);
+          renderStep2(specialtyWarnings);
+        };
+      });
+      body.querySelectorAll('[data-edit-khoa]').forEach(sel=>{
+        sel.onchange = ()=>{
+          const [i,j] = sel.getAttribute('data-edit-khoa').split('-').map(Number);
+          draft[i].rows[j].khoaId = sel.value;
+          draft[i].rows[j].khoaTen = (unitOptions.find(u=>u.id===sel.value)||{}).name || '';
+        };
+      });
+      body.querySelectorAll('[data-edit-thang]').forEach(inp=>{
+        inp.onchange = ()=>{
+          const [i,j] = inp.getAttribute('data-edit-thang').split('-').map(Number);
+          draft[i].rows[j].soThang = parseFloat(inp.value)||0;
+          recalcDatesForDraftStudent(draft[i]);
+          renderStep2(specialtyWarnings);
+        };
+      });
+      body.querySelectorAll('[data-edit-delrow]').forEach(b=>{
+        b.onclick = ()=>{
+          const [i,j] = b.getAttribute('data-edit-delrow').split('-').map(Number);
+          if (draft[i].rows.length<=1){ alert('Cần giữ ít nhất 1 dòng khoa.'); return; }
+          draft[i].rows.splice(j,1);
+          recalcDatesForDraftStudent(draft[i]);
+          renderStep2(specialtyWarnings);
+        };
+      });
+      body.querySelectorAll('[data-edit-addrow]').forEach(b=>{
+        b.onclick = ()=>{
+          const i = +b.getAttribute('data-edit-addrow');
+          const firstUnit = unitOptions[0];
+          draft[i].rows.push({ khoaId: firstUnit?firstUnit.id:'', khoaTen: firstUnit?firstUnit.name:'', soThang: 1, tuNgay:'', denNgay:'' });
+          recalcDatesForDraftStudent(draft[i]);
+          renderStep2(specialtyWarnings);
+        };
+      });
+      body.querySelector('#bp-back').onclick = ()=>{ step = 1; renderStep1(); };
+      body.querySelector('#bp-export-kh').onclick = ()=>{
+        const toExport = draft.filter(d=>!d.excluded);
+        if (!toExport.length){ alert('Không còn học viên nào được chọn để xuất.'); return; }
+        const bodyHtml = toExport.map((d,i)=>{
+          const t = state.trainees.find(x=>x.id===d.traineeId) || { hoTen:d.hoTen, maHoSo:d.maHoSo };
+          return (i>0 ? '<div style="page-break-before:always"></div>' : '') + keHoachLuanKhoaBody(t, d.rows);
+        }).join('');
+        exportWordCustomDoc('KẾ HOẠCH LUÂN KHOA', bodyHtml, 'ke_hoach_luan_khoa_ca_dot_'+todayISO()+'.doc', { landscape:false });
+      };
+      body.querySelector('#bp-apply').onclick = async ()=>{
+        const toApply = draft.filter(d=>!d.excluded);
+        if (!toApply.length){ alert('Không còn học viên nào được chọn để áp dụng.'); return; }
+        const skippedCount = toApply.reduce((s,d)=> s + d.rows.filter(r=>!r.khoaId).length, 0);
+        const confirmMsg = 'Tạo đề nghị phân công cho '+toApply.length+' học viên theo dự thảo trên?\n\nCác khoa sẽ thấy đề nghị này ở đúng link/màn hình phân công của mình như bình thường, vẫn cần khoa chọn người hướng dẫn và ký xác nhận.'
+          + (skippedCount ? '\n\n⚠ '+skippedCount+' dòng chưa chọn được khoa sẽ TỰ ĐỘNG BỎ QUA (không tạo đề nghị) — anh cần vào "Phân khoa" của những người đó bổ sung tay sau.' : '');
+        if (!confirm(confirmMsg)) return;
+        for (const d of toApply){
+          const t = state.trainees.find(x=>x.id===d.traineeId);
+          if (!t) continue;
+          if (!t.deNghiPhanCongList) t.deNghiPhanCongList = [];
+          d.rows.filter(r=>r.khoaId).forEach(r=>{
+            t.deNghiPhanCongList.push({ id: uid('dnpc'), khoaId:r.khoaId, khoaTen:r.khoaTen, tuNgay:r.tuNgay, denNgay:r.denNgay, soThang:r.soThang, trangThai:'Chờ phân công', nguoiHuongDanId:'', nguoiHuongDan:'', nguoiKy:'', ngayKy:'', createdAt: todayISO() });
+          });
+          await saveTrainee(t);
+        }
+        overlay.remove();
+        showToast('Đã tạo kế hoạch phân bổ cho '+toApply.length+' học viên — các khoa liên quan sẽ thấy đề nghị mới khi mở link phân công.');
+        renderTraineeListView(content);
+      };
+    }
+
+    renderStep1();
+  }
   function renderAdminTrainees(content){
     const hvView = state.hvView || 'list';
     setUrlPath(hvView === 'stats' ? 'hocvien/thong-ke' : (hvView === 'bykhoa' ? 'hocvien/theo-khoa' : 'hocvien/danh-sach'));
@@ -6125,6 +6756,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           <button class="secondary" id="hv-export-word">📝 Xuất Word</button>
           <button class="secondary" id="hv-export-excel">📊 Xuất Excel</button>
           <button class="secondary" id="hv-stats-receipt">📅 Thống kê hồ sơ tiếp nhận theo ngày</button>
+          ${isFullAccessRole(state.adminRole) ? `<button id="hv-bulk-plan" title="Chọn nhiều học viên tiếp nhận cùng đợt, áp dụng 1 lộ trình luân khoa mẫu (theo Nghị định 96) để hệ thống tự dự thảo phân bổ 12 tháng qua các khoa">🗓️ Lập kế hoạch phân bổ hàng loạt</button>` : ''}
         </div>
         <div id="hv-table-wrap"></div>
       </div>
@@ -6275,6 +6907,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     };
     if (document.getElementById('hv-qr-register')) document.getElementById('hv-qr-register').onclick = ()=> openTraineeRegisterQrModal();
     if (document.getElementById('hv-stats-receipt')) document.getElementById('hv-stats-receipt').onclick = ()=> openReceiptStatsModal();
+    if (document.getElementById('hv-bulk-plan')) document.getElementById('hv-bulk-plan').onclick = ()=> openBulkPlanModal(content);
     bindHvMauLibrary(content, { allowManage: true });
     document.getElementById('hv-export-word').onclick = ()=>{
       const list = getFilteredList();
@@ -6429,6 +7062,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         <div class="field"><label>Loại hình thực hành</label>
           <select id="hv-loaiHinh">${LOAI_HINH_THUC_HANH_LIST().map(c=>`<option value="${c}" ${c===v.loaiHinhThucHanh?'selected':''}>${c}</option>`).join('')}</select>
         </div>
+        <div class="field"><label>Định hướng chuyên khoa sau khi hoàn thành</label>
+          <select id="hv-dinhHuongCK">${DINH_HUONG_CK_LIST().map(c=>`<option value="${c}" ${c===v.dinhHuongChuyenKhoa?'selected':''}>${c}</option>`).join('')}</select>
+        </div>
       </div>
       <div class="row-flex">
         <div class="field" style="flex:2"><label>Đơn vị công tác / trường đào tạo cử đi</label><input id="hv-donVi" value="${v.donViCuTri||''}" /></div>
@@ -6542,6 +7178,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         chucDanhDangKy: overlay.querySelector('#hv-chucDanh').value,
         trinhDoDaoTao: overlay.querySelector('#hv-trinhDo').value,
         loaiHinhThucHanh: overlay.querySelector('#hv-loaiHinh').value,
+        dinhHuongChuyenKhoa: overlay.querySelector('#hv-dinhHuongCK').value,
         donViCuTri: overlay.querySelector('#hv-donVi').value.trim(),
         mucDichThucHanh: overlay.querySelector('#hv-mucDich').value.trim(),
         tuNgayDeNghi: overlay.querySelector('#hv-tuNgay').value,
@@ -7626,6 +8263,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           <div class="row-flex">
             <button type="button" class="secondary" id="pk-export-word" title="Xuất bảng tổng hợp này ra Word, kèm ảnh chữ ký từng Trưởng khoa">📝 Xuất Word (kèm chữ ký)</button>
             <button type="button" class="secondary" id="pk-export-excel" title="Xuất bảng tổng hợp này ra Excel">📊 Xuất Excel</button>
+            <button type="button" class="secondary" id="pk-export-kh" title="Xuất mẫu Kế hoạch luân khoa gọn gàng để gửi cho các khoa xem lịch cụ thể">📅 Xuất Kế hoạch luân khoa</button>
             <button type="button" class="secondary" id="pk-lock-toggle">${locked ? '🔓 Mở khoá để chỉnh sửa' : '🔒 Khoá lại (tránh xoá nhầm)'}</button>
           </div>
         </div>
@@ -7657,6 +8295,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       };
       overlay.querySelector('#pk-export-word').onclick = ()=> exportPhanCongTongHopWord(t, list, tongThang);
       overlay.querySelector('#pk-export-excel').onclick = ()=> exportPhanCongTongHopExcel(t, list, tongThang);
+      overlay.querySelector('#pk-export-kh').onclick = ()=> exportKeHoachLuanKhoa(t, list);
       wrap.querySelectorAll('[data-reopen-req]').forEach(btn=>{
         btn.onclick = async ()=>{
           const r = list.find(x=>x.id===btn.getAttribute('data-reopen-req'));
@@ -8194,6 +8833,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     { key:'loaiHinh', title:'Loại hình thực hành', hint:'Dùng khi học viên đăng ký hồ sơ thực hành để cấp GPHN.', getList: LOAI_HINH_THUC_HANH_LIST },
     { key:'noiCapCccd', title:'Nơi cấp CCCD (gợi ý nhanh)', hint:'Chỉ là danh sách GỢI Ý khi nhập liệu — vẫn có thể gõ tự do nếu không có trong danh sách.', getList: NOI_CAP_CCCD_LIST },
     { key:'mucDich', title:'Mục đích thực hành (gợi ý nhanh)', hint:'Gợi ý khi học viên/Phòng CĐT khai báo hồ sơ — vẫn gõ tự do được nếu không có trong danh sách.', getList: MUC_DICH_TH_LIST },
+    { key:'dinhHuongCK', title:'Định hướng chuyên khoa sau khi hoàn thành', hint:'Học viên tự chọn khi khai báo hồ sơ — hệ thống dùng thông tin này để tự dự thảo lộ trình luân khoa 12 tháng phù hợp ở mục "Lập kế hoạch phân bổ hàng loạt".', getList: DINH_HUONG_CK_LIST },
   ];
   function renderAdminDanhMuc(content){
     if (!isFullAccessRole(state.adminRole)){
