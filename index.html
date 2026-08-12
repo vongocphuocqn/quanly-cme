@@ -177,6 +177,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 #cnkt-root input:focus, #cnkt-root select:focus, #cnkt-root textarea:focus {
   outline: none; border-color: var(--navy-light); box-shadow: 0 0 0 3px rgba(43,94,143,0.15);
 }
+#cnkt-root input[type="checkbox"], #cnkt-root input[type="radio"] {
+  width: auto; padding: 0; margin: 0; flex: 0 0 auto;
+}
 #cnkt-root button {
   font-family: "Arial", sans-serif; font-size: 13.5px; font-weight: 700; letter-spacing: 0.3px;
   padding: 9px 18px; border-radius: 6px; border: 1px solid var(--navy); background: linear-gradient(180deg, var(--navy-light), var(--navy));
@@ -1419,12 +1422,135 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         };
         return rank(a)-rank(b) || (a.hoTen||'').localeCompare(b.hoTen||'');
       });
+    // ====== Chế độ xem: Danh sách đầy đủ / Lật từng học viên / Dashboard tổng quan ======
+    // (Bổ sung theo yêu cầu Trưởng khoa — không thay đổi dữ liệu hay logic phân công đã có,
+    // chỉ thêm cách hiển thị khác cho cùng dữ liệu "cho"/"xong" ở trên.)
+    const viewMode = state.phanCongViewMode || 'list';
+    // "Lật từng học viên" duyệt qua TẤT CẢ học viên của khoa (cả đã phân công lẫn đang chờ) để có thể
+    // xem lại bất cứ lúc nào — không chỉ hoạt động khi còn người đang chờ phân công.
+    const flipList = pendingItems.slice().sort((a,b)=> (a.t.hoTen||'').localeCompare(b.t.hoTen||''));
+    if (state.phanCongFlipIndex == null) state.phanCongFlipIndex = 0;
+    if (state.phanCongFlipIndex >= flipList.length) state.phanCongFlipIndex = Math.max(0, flipList.length - 1);
+    const choHienThi = (viewMode === 'flip') ? (flipList.length ? [flipList[state.phanCongFlipIndex]] : []) : cho;
+    const soDaPhanHD = cho.filter(x => x.r.nguoiHuongDanId).length;
+    function loTrinhTableHtml(t, currentKhoaId){
+      const rows = (t.deNghiPhanCongList||[]).slice().sort((a,b)=> new Date(a.tuNgay) - new Date(b.tuNgay));
+      if (!rows.length) return '';
+      return `
+        <table style="margin-top:12px;font-size:13.5px">
+          <thead><tr><th style="width:32px">STT</th><th>Khoa</th><th style="width:100px">Từ ngày</th><th style="width:100px">Đến ngày</th><th style="width:70px">Số tháng</th><th style="width:170px">Người hướng dẫn</th></tr></thead>
+          <tbody>
+          ${rows.map((r,i)=>{
+            const laKhoaNay = r.khoaId === currentKhoaId;
+            const trongThang = monthsDecimal(r.tuNgay, r.denNgay);
+            const oHD = laKhoaNay
+              ? (r.nguoiHuongDan ? `<b style="color:var(--amber)">${r.nguoiHuongDan}</b>` : `<span style="color:var(--red);font-style:italic">(khoa mình — chưa phân)</span>`)
+              : (r.nguoiHuongDan ? r.nguoiHuongDan : '<span class="muted">—</span>');
+            return `<tr style="${laKhoaNay?'background:var(--amber-bg)':''}">
+              <td>${i+1}</td><td>${laKhoaNay?'<b>':''}${r.khoaTen||''}${laKhoaNay?'</b>':''}</td>
+              <td>${fmtDate(r.tuNgay)}</td><td>${fmtDate(r.denNgay)}</td>
+              <td>${isNaN(trongThang)?'':trongThang.toFixed(1)}</td>
+              <td>${oHD}</td>
+            </tr>`;
+          }).join('')}
+          </tbody>
+        </table>`;
+    }
+    const toggleXemHtml = `
+      <div class="row-flex" style="gap:8px;margin:10px 0 6px;flex-wrap:wrap">
+        <button type="button" class="${viewMode==='list' ? '' : 'secondary'}" data-dnpc-mode="list">📋 Danh sách đầy đủ</button>
+        <button type="button" class="${viewMode==='flip' ? '' : 'secondary'}" data-dnpc-mode="flip">🔁 Lật từng học viên</button>
+        <button type="button" class="${viewMode==='dashboard' ? '' : 'secondary'}" data-dnpc-mode="dashboard">📊 Dashboard tổng quan</button>
+        ${cho.length ? `<span class="muted" style="align-self:center">${soDaPhanHD}/${cho.length} đã chọn người hướng dẫn</span>` : ''}
+      </div>
+      ${(viewMode==='flip' && flipList.length) ? `
+      <div class="row-flex" style="justify-content:center;align-items:center;gap:14px;margin:6px 0 14px">
+        <button type="button" class="ghost" id="dnpc-flip-prev" ${state.phanCongFlipIndex<=0?'disabled':''}>‹ Trước</button>
+        <span class="muted">Học viên ${state.phanCongFlipIndex+1}/${flipList.length} ${flipList[state.phanCongFlipIndex] && flipList[state.phanCongFlipIndex].r.trangThai==='Đã phân công' ? '— <b style="color:var(--green,#1e7a34)">Đã phân công</b>' : ''}</span>
+        <button type="button" class="ghost" id="dnpc-flip-next" ${state.phanCongFlipIndex>=flipList.length-1?'disabled':''}>Sau ›</button>
+      </div>` : ''}
+    `;
+    const dashboardSignersDatalist = `<datalist id="dnpc-signers-list">${signerOptions.map(e=>`<option value="${e.hoTen}">`).join('')}</datalist>`;
+    const dashboardHtml = `
+      <div class="field" style="max-width:340px;margin:4px 0 12px">
+        <label>Tên người ký chung (dùng khi "Ký hàng loạt", nếu học viên chưa nhập tên riêng)</label>
+        <input type="text" id="dnpc-ten-ky-chung" list="dnpc-signers-list" placeholder="VD: BSCKI. Nguyễn Văn A" value="${state.dnpcTenKyChung||''}" />
+      </div>
+      ${dashboardSignersDatalist}
+      ${!cho.length ? '<p class="muted">Hiện không có đề nghị nào đang chờ khoa phân công.</p>' : `
+      <table>
+        <thead><tr><th style="width:36px">STT</th><th>Học viên</th><th>Thời gian</th><th>Người hướng dẫn</th><th>Xác nhận</th></tr></thead>
+        <tbody>
+        ${cho.map(({t,r},i)=>{
+          const daChonHD = !!r.nguoiHuongDanId;
+          const daKy = !!(r.chuKyImage || r.fileDataUrl || state.lastSignatureDataUrl);
+          return `<tr>
+            <td>${i+1}</td>
+            <td>${t.hoTen}</td>
+            <td>${fmtDateRange(r.tuNgay,r.denNgay)}</td>
+            <td><select data-req-hd="${r.id}" style="min-width:190px">
+              <option value="">— Chưa phân —</option>
+              ${staffOptions.map(e=>{
+                const cnt = countMenteesAtRange(e.id, r.tuNgay, r.denNgay);
+                const full = cnt >= 5;
+                return `<option value="${e.id}" ${r.nguoiHuongDanId===e.id?'selected':''} ${full?'disabled':''}>${e.hoTen} (${cnt}/5)${full?' — Đủ':''}</option>`;
+              }).join('')}
+            </select></td>
+            <td style="text-align:center"><button data-req-confirm="${r.id}" class="small-btn" style="${(!daChonHD||!daKy)?'opacity:.5':''}">✅ Xác nhận</button></td>
+          </tr>`;
+        }).join('')}
+        </tbody>
+      </table>
+
+      <div class="khu-ky-so" style="margin-top:20px;border:1px dashed var(--vang, #a8722a);border-radius:8px;padding:16px 20px;background:#fffdf7">
+        <h4 style="margin:0 0 4px;color:#a8722a;font-size:15px">✍️ Ký xác nhận bảng phân công</h4>
+        ${(state.lastSignatureDataUrl && !state.dnpcDangKyLai) ? `
+          <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+            <img src="${state.lastSignatureDataUrl}" style="height:60px;border:1px solid var(--line);border-radius:4px;background:#fff;padding:4px">
+            <div style="font-weight:bold;color:#a8722a">${state.dnpcTenKyChung || '(chưa nhập tên người ký)'}</div>
+            <button type="button" class="ghost small-btn" id="dnpc-sig-relist">✏️ Ký lại</button>
+          </div>
+        ` : `
+        <div style="font-size:12.5px;color:#a33;background:#fdecec;border:1px solid #f3caca;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-style:italic">
+          Lưu ý: đây là chữ ký hình ảnh (ký nháy bằng tay/chuột), chỉ mang tính minh họa và tham chiếu nội bộ. Đây <b>không phải chữ ký số hợp lệ</b> theo Nghị định 130/2018/NĐ-CP để thay thế chữ ký số trên văn bản điện tử chính thức của bệnh viện.
+        </div>
+        <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start">
+          <div>
+            <div style="background:#fff;border:1px solid var(--line);border-radius:6px;padding:8px;display:inline-block">
+              <canvas id="dnpc-sig-canvas" width="320" height="120" style="border:1px dashed #bbb;border-radius:4px;touch-action:none;cursor:crosshair;background:#fff;display:block"></canvas>
+            </div>
+            <div style="margin-top:8px;display:flex;gap:8px">
+              <button type="button" class="ghost small-btn" id="dnpc-sig-clear">Xoá, ký lại</button>
+              <button type="button" class="small-btn" id="dnpc-sig-save">💾 Lưu chữ ký này</button>
+            </div>
+          </div>
+          <div style="flex:1;min-width:220px">
+            <div style="font-size:13px;color:#666;margin-bottom:6px">Chữ ký đã lưu (dùng lại cho phiếu này &amp; các phiếu khác):</div>
+            <div id="dnpc-sig-preview" style="border:1px solid var(--line);border-radius:6px;min-height:90px;display:flex;align-items:center;justify-content:center;background:repeating-conic-gradient(#f2f2f2 0 25%, #fff 0 50%) 0 0/16px 16px">
+              ${state.lastSignatureDataUrl ? `<img src="${state.lastSignatureDataUrl}" style="max-height:80px">` : `<span class="muted" style="font-size:13px;font-style:italic">Chưa có chữ ký</span>`}
+            </div>
+            <div style="margin-top:10px;font-size:12.5px;color:#666">
+              📎 Tải ảnh chữ ký (nền trong suốt) về máy để dán vào các mẫu Word/PDF khác:
+              <a href="${state.lastSignatureDataUrl||'#'}" download="chu_ky_truong_khoa.png" ${!state.lastSignatureDataUrl?'style="pointer-events:none;color:#aaa"':''}>tải file PNG</a>
+            </div>
+          </div>
+        </div>
+        `}
+      </div>
+      <div class="row-flex" style="margin-top:14px">
+        <button type="button" id="dnpc-batch-sign">✍️ Áp dụng chữ ký trên cho tất cả học viên đã chọn người hướng dẫn nhưng chưa ký</button>
+      </div>
+      <p class="muted" style="margin-top:8px;font-size:12.5px">Lưu ý: chữ ký hình ảnh (ký nháy) chỉ mang tính minh họa/tham chiếu nội bộ, không thay thế chữ ký số hợp lệ theo Nghị định 130/2018/NĐ-CP đối với văn bản điện tử chính thức.</p>
+      `}
+    `;
     content.innerHTML = `
       <div class="card">
         <h3>📋 Đề nghị phân công hướng dẫn từ Phòng Chỉ đạo tuyến</h3>
         <p class="muted" style="margin-top:-6px">Khoa/phòng tự chọn nhân viên đủ điều kiện hướng dẫn của khoa mình cho từng học viên, ký xác nhận — hệ thống tự đưa vào phụ lục theo dõi, không cần Phòng CĐT nhập lại.</p>
-        ${!cho.length ? '<p class="muted">Hiện không có đề nghị nào đang chờ khoa phân công.</p>' : ''}
-        ${cho.map(({t,r})=>{
+        ${toggleXemHtml}
+        ${viewMode==='dashboard' ? dashboardHtml : `
+        ${!choHienThi.length ? '<p class="muted">Hiện không có đề nghị nào đang chờ khoa phân công.</p>' : ''}
+        ${choHienThi.map(({t,r})=>{
           const daChonHD = !!r.nguoiHuongDanId;
           const daNhapKy = !!(r.nguoiKy||'').trim();
           const daKyHoacScan = !!(r.chuKyImage || r.fileDataUrl);
@@ -1432,6 +1558,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           <div class="card" style="background:var(--amber-bg);border-color:var(--amber);margin-bottom:12px" data-req-card="${r.id}">
             <div style="font-size:15px"><b>👤 ${t.hoTen}</b> — ${t.chucDanhDangKy||''} <span class="muted">(${t.donViCuTri||'Chưa rõ đơn vị cử đi'})</span></div>
             <div class="muted" style="margin-top:2px">🗓️ Thời gian dự kiến thực hành tại khoa: <b>${fmtDateRange(r.tuNgay, r.denNgay)}</b> (${r.soThang} tháng)</div>
+
+            <details style="margin-top:8px" ${viewMode==='flip' ? 'open':''}>
+              <summary style="cursor:pointer;font-size:13px;color:var(--xanh-dam,#1e4d3b);font-weight:bold">📅 Xem toàn bộ lộ trình 12 tháng &amp; người hướng dẫn từng khoa</summary>
+              ${loTrinhTableHtml(t, state.unitId)}
+            </details>
 
             <div style="margin-top:10px;padding:8px 10px;background:#fff;border:1px dashed var(--line);border-radius:6px">
               <b style="font-size:13px">📎 Văn bản căn cứ từ Phòng Chỉ đạo tuyến</b> <span class="muted">(tải về/in để Trưởng khoa nắm trước khi phân công)</span>
@@ -1484,12 +1615,63 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             ${(!daChonHD||!daNhapKy||!daKyHoacScan) ? '<p class="muted" style="margin-top:6px">👉 Hoàn thành đủ 3 bước trên rồi bấm nút này để gửi kết quả về Phòng Chỉ đạo tuyến.</p>' : ''}
           </div>
         `;}).join('')}
-        ${xong.length ? `<h3 style="font-size:14px;margin-top:20px;border-top:1px solid var(--line);padding-top:12px">Đã phân công</h3>
-          <table><thead><tr><th>Học viên</th><th>Thời gian</th><th>Người hướng dẫn</th><th>Người ký</th><th>Ngày ký</th><th>Chữ ký</th><th>Đính kèm</th></tr></thead>
-          <tbody>${xong.map(({t,r})=>`<tr><td>${t.hoTen}</td><td>${fmtDateRange(r.tuNgay,r.denNgay)}</td><td>${r.nguoiHuongDan}</td><td>${r.nguoiKy}</td><td>${fmtDate(r.ngayKy)}</td><td style="text-align:center">${reqChuKyCellHtml(r)}</td><td style="text-align:center">${reqAttachCellHtml(r)}</td></tr>`).join('')}</tbody></table>` : ''}
+        `}
+        ${xong.length ? `
+          <div class="row-flex" style="justify-content:space-between;align-items:center;margin-top:20px;border-top:1px solid var(--line);padding-top:12px;flex-wrap:wrap;gap:8px">
+            <h3 style="font-size:14px;margin:0">Đã phân công (${xong.length} học viên)</h3>
+            <button type="button" class="secondary" id="dnpc-xuat-tonghop-word">🖨️ In / Xuất Word bảng tổng hợp</button>
+          </div>
+          <table><thead><tr><th>Học viên</th><th>Thời gian</th><th>Người hướng dẫn</th><th>Chữ ký</th><th>Đính kèm</th></tr></thead>
+          <tbody>${xong.map(({t,r})=>`<tr><td>${t.hoTen}</td><td>${fmtDateRange(r.tuNgay,r.denNgay)}</td><td>${r.nguoiHuongDan}</td><td style="text-align:center">${reqChuKyCellHtml(r)}</td><td style="text-align:center">${reqAttachCellHtml(r)}</td></tr>`).join('')}</tbody></table>
+          ${(()=>{
+            const tenPho = {};
+            xong.forEach(({r})=>{ if (r.nguoiKy) tenPho[r.nguoiKy] = (tenPho[r.nguoiKy]||0) + 1; });
+            const tenPhoBienNhat = Object.keys(tenPho).sort((a,b)=>tenPho[b]-tenPho[a])[0] || state.dnpcTenKyChung || '';
+            const anhKy = state.lastSignatureDataUrl || (xong.find(x=>x.r.chuKyImage)||{}).r?.chuKyImage;
+            return `
+          <div style="display:flex;justify-content:flex-end;margin-top:24px">
+            <div style="text-align:center;min-width:240px">
+              <div style="font-style:italic;font-size:14px;margin-bottom:4px">Gia Lai, ngày ..... tháng ..... năm ${new Date().getFullYear()}</div>
+              <div style="font-weight:bold;font-size:15px;text-transform:uppercase">Trưởng khoa</div>
+              ${anhKy ? `<img src="${anhKy}" style="height:64px;margin:4px 0">` : `<div style="height:64px"></div>`}
+              <div style="font-style:italic;font-size:13px;color:#666">(Ký, ghi rõ họ tên)</div>
+              <div style="font-weight:bold;font-size:14px;margin-top:2px">${tenPhoBienNhat}</div>
+            </div>
+          </div>`;
+          })()}
+        ` : ''}
       </div>
     `;
     bindReqSignAttachViewers(content, (reqId)=> pendingItems.find(x=>x.r.id===reqId));
+
+    const btnXuatTongHopWord = content.querySelector('#dnpc-xuat-tonghop-word');
+    if (btnXuatTongHopWord) btnXuatTongHopWord.onclick = ()=>{
+      const rowsHtml = xong.map(({t,r},i)=>
+        '<tr><td style="text-align:center">'+(i+1)+'</td><td>'+(t.hoTen||'')+'</td>' +
+        '<td style="text-align:center">'+fmtDate(r.tuNgay)+' – '+fmtDate(r.denNgay)+'</td>' +
+        '<td>'+(r.nguoiHuongDan||'')+'</td><td></td></tr>'
+      ).join('');
+      const tenPho = {};
+      xong.forEach(({r})=>{ if (r.nguoiKy) tenPho[r.nguoiKy] = (tenPho[r.nguoiKy]||0) + 1; });
+      const tenPhoBienNhat = Object.keys(tenPho).sort((a,b)=>tenPho[b]-tenPho[a])[0] || state.dnpcTenKyChung || '';
+      const anhKy = state.lastSignatureDataUrl || ((xong.find(x=>x.r.chuKyImage)||{}).r||{}).chuKyImage || '';
+      const bodyHtml =
+        '<table class="kv" style="table-layout:fixed"><colgroup><col style="width:42%"><col style="width:58%"></colgroup><tr>' +
+          '<td style="width:42%;vertical-align:middle" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:11pt;white-space:nowrap" nowrap="nowrap">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br>' + (state.unitName||'').toUpperCase() + '</div></td>' +
+          '<td style="width:58%;vertical-align:middle" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap" nowrap="nowrap">BẢNG TỔNG HỢP PHÂN CÔNG HƯỚNG DẪN</div>' +
+            '<div style="text-align:center;font-weight:bold;font-size:11pt;white-space:nowrap" nowrap="nowrap">HỌC VIÊN THỰC HÀNH TẠI ' + (state.unitName||'').toUpperCase() + '</div></td>' +
+        '</tr></table>' +
+        '<p style="margin-top:14px">Tổng số học viên đã phân công người hướng dẫn: <b>'+xong.length+'</b></p>' +
+        '<table class="data"><thead><tr><th style="width:6%">STT</th><th style="width:26%">Học viên</th><th style="width:24%">Thời gian thực hành</th><th style="width:24%">Người hướng dẫn</th><th style="width:20%">Ghi chú</th></tr></thead>' +
+        '<tbody>'+rowsHtml+'</tbody></table>' +
+        '<table class="sign-block"><tr><td style="width:50%">&nbsp;</td><td style="width:50%">Gia Lai, ngày ..... tháng ..... năm '+new Date().getFullYear()+'<br>TRƯỞNG KHOA<br><span class="sign-note">(Ký, ghi rõ họ tên)</span><br>' +
+          (anhKy
+            ? '<img src="'+anhKy+'" width="110" height="48" style="width:110px;height:48px;mso-width-source:userset;mso-height-source:userset;display:block;margin:0 auto" alt="Chữ ký" />'
+            : '<br><br><br><br>') +
+          (tenPhoBienNhat ? '<div style="font-weight:bold">'+tenPhoBienNhat+'</div>' : '') +
+        '</td></tr></table>';
+      exportWordCustomDoc('BẢNG TỔNG HỢP PHÂN CÔNG HƯỚNG DẪN', bodyHtml, 'bang_tong_hop_phan_cong_'+(state.unitName||'khoa').replace(/\s+/g,'_')+'_'+todayISO()+'.doc', { landscape:false });
+    };
     content.querySelectorAll('[data-req-congvan]').forEach(btn=>{
       btn.onclick = ()=>{
         const found = pendingItems.find(x=>x.r.id===btn.getAttribute('data-req-congvan'));
@@ -1551,6 +1733,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         if (!found) return;
         openSignaturePadModal('Ký xác nhận phân công — ' + found.t.hoTen, async (dataUrl)=>{
           found.r.chuKyImage = dataUrl;
+          state.lastSignatureDataUrl = dataUrl; // nhớ lại để có thể "Dùng lại" nhanh cho học viên khác / phiếu khác
           await saveTrainee(found.t);
           showToast('Đã lưu chữ ký.');
           renderUnitPhanCong(content);
@@ -1591,10 +1774,18 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         const hdSelect = content.querySelector('[data-req-hd="'+reqId+'"]');
         const nguoiKyInput = content.querySelector('[data-req-nguoiky="'+reqId+'"]');
         const hdId = hdSelect ? hdSelect.value : '';
-        const nguoiKy = nguoiKyInput ? nguoiKyInput.value.trim() : '';
+        let nguoiKy = nguoiKyInput ? nguoiKyInput.value.trim() : '';
+        if (!nguoiKy) nguoiKy = (r.nguoiKy||'').trim();
+        if (!nguoiKy){
+          const tenChungInput = content.querySelector('#dnpc-ten-ky-chung');
+          nguoiKy = tenChungInput ? tenChungInput.value.trim() : '';
+        }
         if (!hdId){ alert('Vui lòng chọn người hướng dẫn.'); return; }
-        if (!nguoiKy){ alert('Vui lòng nhập tên người ký xác nhận.'); return; }
-        if (!r.chuKyImage && !r.fileDataUrl){ alert('Vui lòng ký trên màn hình HOẶC in phiếu ký giấy rồi đính kèm bản scan, trước khi xác nhận.'); return; }
+        if (!nguoiKy){ alert('Vui lòng nhập tên người ký xác nhận (ở ô "Tên người ký chung" phía trên bảng, hoặc trực tiếp trong thẻ học viên nếu đang ở chế độ Danh sách/Lật xem).'); return; }
+        if (!r.chuKyImage && !r.fileDataUrl && state.lastSignatureDataUrl){
+          r.chuKyImage = state.lastSignatureDataUrl;
+        }
+        if (!r.chuKyImage && !r.fileDataUrl){ alert('Vui lòng ký trên màn hình (khung "Ký xác nhận bằng phân công" ở Dashboard, hoặc nút Ký trong thẻ học viên) HOẶC in phiếu ký giấy rồi đính kèm bản scan, trước khi xác nhận.'); return; }
         const emp = state.employees.find(e=>e.id===hdId);
         const cnt = countMenteesAtRange(hdId, r.tuNgay, r.denNgay);
         if (cnt >= 5){ alert('Người hướng dẫn này đã đủ 5 học viên trong khoảng thời gian này. Vui lòng chọn người khác.'); return; }
@@ -1621,6 +1812,116 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         renderUnitPhanCong(content);
       };
     });
+
+    // ====== Binding cho phần bổ sung: chuyển chế độ xem / lật học viên / dùng lại chữ ký / ký hàng loạt ======
+    content.querySelectorAll('[data-dnpc-mode]').forEach(btn=>{
+      btn.onclick = ()=>{
+        state.phanCongViewMode = btn.getAttribute('data-dnpc-mode');
+        renderUnitPhanCong(content);
+      };
+    });
+    const btnFlipPrev = content.querySelector('#dnpc-flip-prev');
+    if (btnFlipPrev) btnFlipPrev.onclick = ()=>{
+      state.phanCongFlipIndex = Math.max(0, (state.phanCongFlipIndex||0) - 1);
+      renderUnitPhanCong(content);
+    };
+    const btnFlipNext = content.querySelector('#dnpc-flip-next');
+    if (btnFlipNext) btnFlipNext.onclick = ()=>{
+      state.phanCongFlipIndex = Math.min(flipList.length - 1, (state.phanCongFlipIndex||0) + 1);
+      renderUnitPhanCong(content);
+    };
+    content.querySelectorAll('[data-dnpc-reuse-sign]').forEach(btn=>{
+      btn.onclick = async ()=>{
+        const reqId = btn.getAttribute('data-dnpc-reuse-sign');
+        const found = pendingItems.find(x=>x.r.id===reqId);
+        if (!found || !state.lastSignatureDataUrl) return;
+        found.r.chuKyImage = state.lastSignatureDataUrl;
+        await saveTrainee(found.t);
+        showToast('Đã dùng lại chữ ký gần nhất cho học viên "'+found.t.hoTen+'".');
+        renderUnitPhanCong(content);
+      };
+    });
+    const dnpcTenKyChungInput = content.querySelector('#dnpc-ten-ky-chung');
+    if (dnpcTenKyChungInput) dnpcTenKyChungInput.oninput = ()=>{ state.dnpcTenKyChung = dnpcTenKyChungInput.value; };
+    const btnKyLai = content.querySelector('#dnpc-sig-relist');
+    if (btnKyLai) btnKyLai.onclick = ()=>{ state.dnpcDangKyLai = true; renderUnitPhanCong(content); };
+
+    const btnBatchSign = content.querySelector('#dnpc-batch-sign');
+    if (btnBatchSign) btnBatchSign.onclick = async ()=>{
+      if (!state.lastSignatureDataUrl){ alert('Vui lòng ký vào khung "Ký xác nhận bằng phân công" và bấm "Lưu chữ ký này" trước.'); return; }
+      const tenChungInput = content.querySelector('#dnpc-ten-ky-chung');
+      const tenChung = tenChungInput ? tenChungInput.value.trim() : '';
+      const targets = cho.filter(x => x.r.nguoiHuongDanId && !(x.r.chuKyImage || x.r.fileDataUrl));
+      if (!targets.length){ alert('Không có học viên nào đủ điều kiện để áp dụng chữ ký (cần đã chọn người hướng dẫn và chưa ký).'); return; }
+      const thieuTen = targets.filter(x => !(x.r.nguoiKy||'').trim() && !tenChung);
+      if (thieuTen.length){ alert('Vui lòng nhập "Tên người ký chung" ở trên (hoặc nhập tên người ký riêng cho từng học viên còn thiếu) trước khi áp dụng chữ ký.'); return; }
+      const dataUrl = state.lastSignatureDataUrl;
+      let thanhCong = 0, boQuaDuQuota = 0;
+      for (const { t, r } of targets){
+        const hdId = r.nguoiHuongDanId;
+        const emp = state.employees.find(e=>e.id===hdId);
+        const cnt = countMenteesAtRange(hdId, r.tuNgay, r.denNgay);
+        if (cnt >= 5){ boQuaDuQuota++; continue; }
+        r.nguoiHuongDan = emp ? emp.hoTen : r.nguoiHuongDan;
+        r.nguoiKy = (r.nguoiKy||'').trim() || tenChung;
+        r.chuKyImage = dataUrl;
+        r.ngayKy = todayISO();
+        r.trangThai = 'Đã phân công';
+        t.giaiDoan = t.giaiDoan || [];
+        t.giaiDoan.push({
+          id: uid('gd'),
+          khoaId: r.khoaId, khoa: r.khoaTen,
+          nguoiHuongDanId: hdId, nguoiHuongDan: r.nguoiHuongDan,
+          tuNgay: r.tuNgay, denNgay: r.denNgay,
+          trangThai: 'Chưa bắt đầu',
+          noiDung: '',
+          ketQua: 'Chưa đánh giá',
+          nhanXet: '',
+          minhChungFile: '', minhChungFileType: '', minhChungFileName: '', minhChungLink: '',
+        });
+        recomputeTraineeOverallStatus(t);
+        await saveTrainee(t);
+        thanhCong++;
+      }
+      showToast('Đã áp dụng chữ ký & xác nhận cho ' + thanhCong + ' học viên.' + (boQuaDuQuota ? (' Bỏ qua ' + boQuaDuQuota + ' do người hướng dẫn đã đủ 5 học viên.') : ''));
+      renderUnitPhanCong(content);
+    };
+
+    // Canvas ký nội tuyến trong Dashboard (nếu đang ở chế độ dashboard)
+    const dnpcCanvas = content.querySelector('#dnpc-sig-canvas');
+    if (dnpcCanvas){
+      const ctxDnpc = dnpcCanvas.getContext('2d');
+      ctxDnpc.lineWidth = 2.2; ctxDnpc.lineCap = 'round'; ctxDnpc.strokeStyle = '#1e4d3b';
+      let dangVeDnpc = false, hasDrawnDnpc = false;
+      function dnpcPos(e){
+        const rect = dnpcCanvas.getBoundingClientRect();
+        const scaleX = dnpcCanvas.width / rect.width, scaleY = dnpcCanvas.height / rect.height;
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        return { x:(clientX-rect.left)*scaleX, y:(clientY-rect.top)*scaleY };
+      }
+      function dnpcStart(e){ e.preventDefault(); dangVeDnpc = true; hasDrawnDnpc = true; const p = dnpcPos(e); ctxDnpc.beginPath(); ctxDnpc.moveTo(p.x,p.y); }
+      function dnpcMove(e){ if(!dangVeDnpc) return; e.preventDefault(); const p = dnpcPos(e); ctxDnpc.lineTo(p.x,p.y); ctxDnpc.stroke(); }
+      function dnpcEnd(){ dangVeDnpc = false; }
+      dnpcCanvas.addEventListener('mousedown', dnpcStart);
+      dnpcCanvas.addEventListener('mousemove', dnpcMove);
+      window.addEventListener('mouseup', dnpcEnd);
+      dnpcCanvas.addEventListener('touchstart', dnpcStart, { passive:false });
+      dnpcCanvas.addEventListener('touchmove', dnpcMove, { passive:false });
+      dnpcCanvas.addEventListener('touchend', dnpcEnd);
+      const btnClearDnpc = content.querySelector('#dnpc-sig-clear');
+      if (btnClearDnpc) btnClearDnpc.onclick = ()=>{ ctxDnpc.clearRect(0,0,dnpcCanvas.width,dnpcCanvas.height); hasDrawnDnpc = false; };
+      const btnSaveDnpc = content.querySelector('#dnpc-sig-save');
+      if (btnSaveDnpc) btnSaveDnpc.onclick = ()=>{
+        if (!hasDrawnDnpc){ alert('Vui lòng ký vào khung trước khi lưu.'); return; }
+        const outCanvas = document.createElement('canvas');
+        outCanvas.width = 140; outCanvas.height = Math.round(140 * dnpcCanvas.height / dnpcCanvas.width);
+        outCanvas.getContext('2d').drawImage(dnpcCanvas, 0, 0, outCanvas.width, outCanvas.height);
+        state.lastSignatureDataUrl = outCanvas.toDataURL('image/png');
+        state.dnpcDangKyLai = false;
+        renderUnitPhanCong(content);
+      };
+    }
   }
 
   function renderUnitChangePin(content){
@@ -3072,13 +3373,13 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         // Khoảng lọc bao gồm hôm nay: tin theo trạng thái "Đang thực hành" đã đánh dấu tay,
         // tránh bỏ sót khi ngày Từ/Đến nhập lệch 1-2 ngày so với thực tế đang diễn ra.
         if (rangeIncludesToday && s.trangThai === 'Đang thực hành'){
-          out.push({ hoTen: tr.hoTen, donViCuTri: tr.donViCuTri||'—', khoa: s.khoa, tuNgay: s.tuNgay, denNgay: s.denNgay, trangThai: s.trangThai });
+          out.push({ hoTen: tr.hoTen, chucDanh: tr.chucDanhDangKy||'', donViCuTri: tr.donViCuTri||'—', khoa: s.khoa, tuNgay: s.tuNgay, denNgay: s.denNgay, trangThai: s.trangThai });
           return;
         }
         const sFrom = s.tuNgay || '0000-01-01';
         const sTo = s.denNgay || '9999-12-31';
         if (sFrom <= nTo && sTo >= nFrom){
-          out.push({ hoTen: tr.hoTen, donViCuTri: tr.donViCuTri||'—', khoa: s.khoa, tuNgay: s.tuNgay, denNgay: s.denNgay, trangThai: s.trangThai });
+          out.push({ hoTen: tr.hoTen, chucDanh: tr.chucDanhDangKy||'', donViCuTri: tr.donViCuTri||'—', khoa: s.khoa, tuNgay: s.tuNgay, denNgay: s.denNgay, trangThai: s.trangThai });
         }
       });
     });
@@ -3118,6 +3419,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       return {
         id: e.id,
         name: e.hoTen,
+        chucDanh: e.chucDanh || '',
         donVi: (state.config.units.find(u=>u.id===e.donViId)||{}).name || '—',
         donViId: e.donViId,
         dangHuongDan: cnt,
@@ -5642,27 +5944,35 @@ https://github.com/nodeca/pako/blob/main/LICENSE
   // trong cùng nhóm ngay tại Bước 2 nếu muốn, miễn đúng tổng số tháng theo quy định.
   const ROTATION_TEMPLATES_SEED = [
     { ten: 'Bác sĩ Y khoa — 12 tháng (Phụ lục I mục A)', stages: [
-      { search: ['nội tổng hợp'], soThang: 2, ghiChu: 'Đại diện Hệ Nội — có thể đổi sang khoa Nội khác' },
-      { search: ['ngoại tổng hợp'], soThang: 2, ghiChu: 'Đại diện Hệ Ngoại — có thể đổi sang khoa Ngoại khác' },
-      { search: ['phụ sản','sản'], soThang: 2 },
-      { search: ['nhi'], soThang: 2, exact: ['nhi','nhi khoa'] },
-      { search: ['tai mũi họng','tmh'], soThang: 1, ghiChu: 'Chuyên khoa khác — có thể đổi sang Mắt/RHM/YHCT/PHCN/Da liễu' },
-      { search: ['cấp cứu'], soThang: 1, ghiChu: 'Hồi sức cấp cứu — xếp gần cuối lộ trình để học viên có nền tảng trước khi vào cấp cứu' },
-      { search: ['hstc','hồi sức tích cực','chống độc'], soThang: 2, ghiChu: 'Hồi sức cấp cứu — xếp cuối lộ trình' },
+      { search: ['cấp cứu'], soThang: 1, ghiChu: 'Nhóm 1 — Hồi sức cấp cứu (7 khoa, chọn 1 khoa 1 tháng theo QĐ chung)' },
+      { search: ['hstc','hồi sức tích cực','chống độc'], soThang: 2, ghiChu: 'Nhóm 1 — Hồi sức cấp cứu (chọn 1 khoa 2 tháng theo QĐ chung)' },
+      { search: ['nội tổng hợp'], soThang: 1, ghiChu: 'Nhóm 2 — Hệ Nội (10 khoa, chọn 2 khoa mỗi khoa 1 tháng — có thể đổi khoa Nội khác)' },
+      { search: ['nội tim mạch'], soThang: 1, ghiChu: 'Nhóm 2 — Hệ Nội (10 khoa, chọn 2 khoa mỗi khoa 1 tháng — có thể đổi khoa Nội khác)' },
+      { search: ['ngoại tổng hợp'], soThang: 1, ghiChu: 'Nhóm 3 — Hệ Ngoại (6 khoa, chọn 2 khoa mỗi khoa 1 tháng — có thể đổi khoa Ngoại khác)' },
+      { search: ['chấn thương'], soThang: 1, ghiChu: 'Nhóm 3 — Hệ Ngoại (6 khoa, chọn 2 khoa mỗi khoa 1 tháng — có thể đổi khoa Ngoại khác)' },
+      { search: ['phụ sản','sản'], soThang: 1.5, ghiChu: 'Nhóm 4 — Hệ Sản (cố định theo QĐ chung: Phụ Sản 1,5 tháng)' },
+      { search: ['hỗ trợ sinh sản'], soThang: 0.5, ghiChu: 'Nhóm 4 — Hệ Sản (cố định theo QĐ chung: Hỗ trợ sinh sản 0,5 tháng)' },
+      { search: ['nhi'], soThang: 1.5, exact: ['nhi','nhi khoa'], ghiChu: 'Nhóm 5 — Hệ Nhi (cố định theo QĐ chung: Nhi 1,5 tháng)' },
+      { search: ['sơ sinh'], soThang: 0.5, ghiChu: 'Nhóm 5 — Hệ Nhi (cố định theo QĐ chung: Nhi Sơ sinh 0,5 tháng)' },
+      { search: ['tai mũi họng','tmh'], soThang: 1, ghiChu: 'Nhóm 6 — Chuyên khoa lẻ (6 khoa, chọn 1 khoa 1 tháng — có thể đổi sang Mắt/RHM/YHCT/PHCN/Da liễu)' },
     ]},
     { ten: 'Bác sĩ Y học dự phòng — 12 tháng (Phụ lục I mục B)', stages: [
-      { search: ['nội tổng hợp'], soThang: 2, ghiChu: 'Đại diện Hệ Nội' },
-      { search: ['ngoại tổng hợp'], soThang: 2, ghiChu: 'Đại diện Hệ Ngoại' },
-      { search: ['phụ sản','sản'], soThang: 2 },
-      { search: ['nhi'], soThang: 2, exact: ['nhi','nhi khoa'] },
-      { search: ['tai mũi họng','tmh'], soThang: 1, ghiChu: 'Chuyên khoa khác' },
-      { search: ['cấp cứu'], soThang: 1, ghiChu: 'Hồi sức cấp cứu — xếp gần cuối lộ trình' },
-      { search: ['hstc','hồi sức tích cực','chống độc'], soThang: 2, ghiChu: 'Hồi sức cấp cứu — xếp cuối lộ trình' },
+      { search: ['cấp cứu'], soThang: 1, ghiChu: 'Nhóm 1 — Hồi sức cấp cứu (chọn 1 khoa 1 tháng theo QĐ chung)' },
+      { search: ['hstc','hồi sức tích cực','chống độc'], soThang: 2, ghiChu: 'Nhóm 1 — Hồi sức cấp cứu (chọn 1 khoa 2 tháng theo QĐ chung)' },
+      { search: ['nội tổng hợp'], soThang: 1, ghiChu: 'Nhóm 2 — Hệ Nội (chọn 2 khoa mỗi khoa 1 tháng)' },
+      { search: ['nội tim mạch'], soThang: 1, ghiChu: 'Nhóm 2 — Hệ Nội (chọn 2 khoa mỗi khoa 1 tháng)' },
+      { search: ['ngoại tổng hợp'], soThang: 1, ghiChu: 'Nhóm 3 — Hệ Ngoại (chọn 2 khoa mỗi khoa 1 tháng)' },
+      { search: ['chấn thương'], soThang: 1, ghiChu: 'Nhóm 3 — Hệ Ngoại (chọn 2 khoa mỗi khoa 1 tháng)' },
+      { search: ['phụ sản','sản'], soThang: 1.5, ghiChu: 'Nhóm 4 — Hệ Sản (cố định: Phụ Sản 1,5 tháng)' },
+      { search: ['hỗ trợ sinh sản'], soThang: 0.5, ghiChu: 'Nhóm 4 — Hệ Sản (cố định: Hỗ trợ sinh sản 0,5 tháng)' },
+      { search: ['nhi'], soThang: 1.5, exact: ['nhi','nhi khoa'], ghiChu: 'Nhóm 5 — Hệ Nhi (cố định: Nhi 1,5 tháng)' },
+      { search: ['sơ sinh'], soThang: 0.5, ghiChu: 'Nhóm 5 — Hệ Nhi (cố định: Nhi Sơ sinh 0,5 tháng)' },
+      { search: ['tai mũi họng','tmh'], soThang: 1, ghiChu: 'Nhóm 6 — Chuyên khoa lẻ (chọn 1 khoa 1 tháng)' },
     ]},
     { ten: 'Bác sĩ Răng Hàm Mặt — 12 tháng (Phụ lục I mục C)', stages: [
-      { search: ['răng hàm mặt','rhm'], soThang: 9 },
-      { search: ['cấp cứu'], soThang: 1, ghiChu: 'Hồi sức cấp cứu — xếp cuối lộ trình' },
-      { search: ['hstc','hồi sức tích cực','chống độc'], soThang: 2, ghiChu: 'Hồi sức cấp cứu — xếp cuối lộ trình' },
+      { search: ['cấp cứu'], soThang: 1, ghiChu: 'Nhóm 1 — Hồi sức cấp cứu (chọn 1 khoa 1 tháng theo QĐ chung)' },
+      { search: ['hstc','hồi sức tích cực','chống độc'], soThang: 2, ghiChu: 'Nhóm 1 — Hồi sức cấp cứu (chọn 1 khoa 2 tháng theo QĐ chung)' },
+      { search: ['răng hàm mặt','rhm'], soThang: 9, ghiChu: 'Chuyên khoa chính — cố định Khoa Răng Hàm Mặt 9 tháng' },
     ]},
     { ten: 'Bác sĩ Y học cổ truyền — 12 tháng (Phụ lục I mục D)', stages: [
       { search: ['y học cổ truyền','yhct'], soThang: 9 },
@@ -6149,7 +6459,13 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         if (!toExport.length){ alert('Không còn học viên nào được chọn để xuất.'); return; }
         const bodyHtml = toExport.map((d,i)=>{
           const t = state.trainees.find(x=>x.id===d.traineeId) || { hoTen:d.hoTen, maHoSo:d.maHoSo };
-          return (i>0 ? '<div style="page-break-before:always"></div>' : '') + keHoachLuanKhoaBody(t, d.rows);
+          const noiDung = keHoachLuanKhoaBody(t, d.rows);
+          // Bọc mỗi học viên (trừ người đầu tiên) trong 1 div ngắt trang — dùng cả page-break-before
+          // (chuẩn CSS) lẫn mso-page-break-before (Word hiểu chắc chắn hơn) để tránh bị dính liền
+          // trang khi mở bằng Microsoft Word thật (không phải trình xem HTML thông thường).
+          return i>0
+            ? '<div style="page-break-before:always;mso-page-break-before:always">' + noiDung + '</div>'
+            : noiDung;
         }).join('');
         exportWordCustomDoc('KẾ HOẠCH LUÂN KHOA', bodyHtml, 'ke_hoach_luan_khoa_ca_dot_'+todayISO()+'.doc', { landscape:false });
       };
@@ -6202,19 +6518,79 @@ https://github.com/nodeca/pako/blob/main/LICENSE
   // lẻ chỉ để lấy đúng 1 link giống nhau gửi cho cùng 1 Trưởng khoa. ----
   function renderTraineeByKhoaView(content){
     const groups = {}; // khoaId -> { khoaTen, items:[{t,r}] }
+    const doneList = []; // các mục "Đã phân công" — dùng cho phần Mở lại hàng loạt
+    const allByKhoa = []; // TẤT CẢ các mục (chờ + đã phân công) — dùng cho khối Tra cứu bên dưới
     visibleTrainees().forEach(t=>{
       (t.deNghiPhanCongList||[]).forEach(r=>{
-        if (r.trangThai === 'Đã phân công') return; // đã xong, không cần gửi lại link
+        allByKhoa.push({ t, r });
+        if (r.trangThai === 'Đã phân công'){ doneList.push({ t, r }); return; }
         if (!r.khoaId) return;
         if (!groups[r.khoaId]) groups[r.khoaId] = { khoaTen: r.khoaTen, items: [] };
         groups[r.khoaId].items.push({ t, r });
       });
     });
+    doneList.sort((a,b)=> (b.r.ngayKy||'').localeCompare(a.r.ngayKy||''));
     const khoaIds = Object.keys(groups).sort((a,b)=> (groups[a].khoaTen||'').localeCompare(groups[b].khoaTen||''));
+
+    // ====== Khối "Tra cứu theo khoa & khoảng thời gian" ======
+    // VD: "Từ 1/9 đến 30/9, Khoa HSTC-CĐ có những học viên nào" — không phân biệt đã/chưa phân công,
+    // chỉ cần khoảng thời gian thực hành tại khoa đó có giao với khoảng ngày đang lọc.
+    if (!state.traCuuKhoa) state.traCuuKhoa = { khoaId:'', from:'', to:'' };
+    const tc = state.traCuuKhoa;
+    const tatCaKhoaOptions = state.config.units.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+    function coGiao(tuNgay, denNgay, from, to){
+      if (from && denNgay && denNgay < from) return false;
+      if (to && tuNgay && tuNgay > to) return false;
+      return true;
+    }
+    const traCuuKetQua = (tc.khoaId || tc.from || tc.to)
+      ? allByKhoa.filter(({r})=> (!tc.khoaId || r.khoaId===tc.khoaId) && coGiao(r.tuNgay, r.denNgay, tc.from, tc.to))
+          .sort((a,b)=> (a.r.tuNgay||'').localeCompare(b.r.tuNgay||''))
+      : null;
+
     content.innerHTML = `
+      <div class="card">
+        <h3>🔎 Tra cứu học viên theo khoa &amp; khoảng thời gian</h3>
+        <p class="muted" style="margin-top:-6px">VD: từ ngày ... đến ngày ..., khoa này có những học viên nào (bất kể đã hay chưa phân công người hướng dẫn). Để trống "Khoa" để tra cứu trên toàn viện.</p>
+        <div class="row-flex" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+          <div class="field" style="min-width:260px">
+            <label>Khoa (gõ để tìm)</label>
+            <div id="tc-khoa-ssel"></div>
+          </div>
+          <div class="field"><label>Từ ngày</label><input type="date" id="tc-tu" value="${tc.from||''}"></div>
+          <div class="field"><label>Đến ngày</label><input type="date" id="tc-den" value="${tc.to||''}"></div>
+          <button type="button" id="tc-loc">🔎 Tra cứu</button>
+          <button type="button" class="ghost small-btn" id="tc-xoa-loc">✕ Xoá lọc</button>
+        </div>
+        ${traCuuKetQua ? `
+          <div class="row-flex" style="justify-content:space-between;align-items:center;margin-top:14px;flex-wrap:wrap;gap:8px">
+            <p style="margin:0"><b>${traCuuKetQua.length}</b> học viên khớp điều kiện đang lọc:</p>
+            ${traCuuKetQua.length ? `<button type="button" class="secondary" id="tc-export-word">🖨️ In / Xuất Word đợt tra cứu này</button>` : ''}
+          </div>
+          ${!traCuuKetQua.length ? '<p class="muted">Không tìm thấy học viên nào trong khoảng thời gian/khoa đã chọn.</p>' : `
+          <table>
+            <thead><tr><th>Học viên</th><th>Khoa</th><th>Từ ngày</th><th>Đến ngày</th><th>Trạng thái</th><th>Người hướng dẫn</th></tr></thead>
+            <tbody>${traCuuKetQua.map(({t,r})=>`<tr>
+              <td>${t.hoTen||''}</td><td>${r.khoaTen||''}</td>
+              <td>${fmtDate(r.tuNgay)}</td><td>${fmtDate(r.denNgay)}</td>
+              <td>${r.trangThai==='Đã phân công' ? '<span class="pill green">Đã phân công</span>' : '<span class="pill" style="background:#eee">Chờ phân công</span>'}</td>
+              <td>${r.nguoiHuongDan||'—'}</td>
+            </tr>`).join('')}</tbody>
+          </table>`}
+        ` : ''}
+      </div>
       <div class="card">
         <h3>🔗 Link phân công theo khoa (gộp mọi học viên đang chờ của cùng 1 khoa)</h3>
         <p class="muted" style="margin-top:-6px">Mỗi khoa chỉ cần <b>1 link duy nhất</b> — Trưởng khoa mở ra sẽ thấy đủ TẤT CẢ học viên đang chờ khoa mình phân công (không phải 1 link/học viên như trước). Khoảng "Từ ngày – đến ngày" dưới đây là gộp từ ngày sớm nhất đến ngày muộn nhất trong số các học viên đang chờ của khoa.</p>
+        ${khoaIds.length ? `
+        <div class="row-flex" style="gap:8px;margin-top:10px;flex-wrap:wrap">
+          <button type="button" class="ghost small-btn" id="cho-check-all">☑ Chọn tất cả (mọi khoa)</button>
+          <button type="button" class="ghost small-btn" id="cho-check-none">☐ Bỏ chọn hết</button>
+          <span class="muted" id="cho-count-sel" style="align-self:center">0 mục đã chọn</span>
+          <button type="button" id="cho-batch-del" style="background:#b3261e">🗑️ Xoá hàng loạt các mục đã chọn</button>
+        </div>
+        <p class="muted" style="margin-top:6px;font-size:12.5px">Dùng khi cần dọn nhanh dữ liệu test/đề nghị nạp nhầm — chỉ xoá được các mục <b>đang chờ khoa phân công</b> (chưa xác nhận). Mục đã "Đã phân công" (đã ký) thì dùng khối "↩️ Mở lại" bên dưới.</p>
+        ` : ''}
       </div>
       ${!khoaIds.length ? '<div class="card"><div class="empty">Hiện không có khoa nào đang chờ phân công.</div></div>' : ''}
       ${khoaIds.map(khoaId=>{
@@ -6228,15 +6604,110 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         <div class="card" data-khoa-card="${khoaId}">
           <div style="font-size:15px"><b>🏥 ${g.khoaTen||'(Chưa rõ tên khoa)'}</b> <span class="pill amber">${g.items.length} học viên đang chờ</span></div>
           <div class="muted" style="margin-top:2px">🗓️ Khoảng thời gian gộp: <b>${fmtDateRange(tuNgay, denNgay)}</b></div>
-          <ul style="margin:8px 0 0 0;padding-left:20px;font-size:13.5px">
-            ${g.items.map(({t,r})=>`<li>${t.hoTen||''} — ${fmtDateRange(r.tuNgay,r.denNgay)} (${r.soThang||''} tháng)</li>`).join('')}
+          <div style="margin-top:8px">
+            <button type="button" class="ghost small-btn" data-cho-checkall-khoa="${khoaId}">☑ Chọn tất cả khoa này</button>
+            <button type="button" class="ghost small-btn" data-cho-uncheckall-khoa="${khoaId}">☐ Bỏ chọn khoa này</button>
+          </div>
+          <ul style="margin:8px 0 0 0;padding-left:4px;list-style:none;font-size:13.5px">
+            ${g.items.map(({t,r})=>`<li style="margin-bottom:3px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" data-cho-check="${t.id}::${r.id}" style="width:auto;flex:0 0 auto;padding:0;margin:0"> ${t.hoTen||''} — ${fmtDateRange(r.tuNgay,r.denNgay)} (${r.soThang||''} tháng)</label></li>`).join('')}
           </ul>
           <div class="row-flex" style="margin-top:10px">
             ${u ? `<button type="button" data-copy-khoa-link="${khoaId}">🔗 Copy 1 link duy nhất cho khoa này</button>` : `<span class="muted">⚠ Không tìm thấy đơn vị tương ứng trong danh mục Khoa/Phòng — kiểm tra lại tên khoa.</span>`}
           </div>
         </div>`;
       }).join('')}
+
+      <div class="card" data-done-card="1">
+        <h3>↩️ Đã phân công — mở lại (hủy) từng học viên hoặc hàng loạt</h3>
+        <p class="muted" style="margin-top:-6px">Tick chọn các mục cần hủy rồi bấm "Mở lại hàng loạt" ở dưới — hồ sơ sẽ quay về trạng thái "Chờ phân công", khoa dùng lại đúng link cũ để chọn/ký lại. <b>Lưu ý:</b> nếu Quyết định/Phụ lục đã trình ký Giám đốc dựa trên dữ liệu cũ, cần rà soát lại các văn bản đó sau khi mở lại.</p>
+        ${!doneList.length ? '<p class="muted">Hiện chưa có học viên nào ở trạng thái "Đã phân công".</p>' : `
+        <div class="row-flex" style="gap:8px;margin-bottom:8px">
+          <button type="button" class="ghost small-btn" id="done-check-all">☑ Chọn tất cả</button>
+          <button type="button" class="ghost small-btn" id="done-check-none">☐ Bỏ chọn hết</button>
+          <span class="muted" id="done-count-sel" style="align-self:center">0 mục đã chọn</span>
+        </div>
+        <table>
+          <thead><tr><th style="width:32px"></th><th>Học viên</th><th>Khoa</th><th>Thời gian</th><th>Người hướng dẫn</th><th>Người ký</th><th>Ngày ký</th></tr></thead>
+          <tbody>
+          ${doneList.map(({t,r})=>`<tr>
+            <td style="text-align:center"><input type="checkbox" data-done-check="${t.id}::${r.id}" style="width:auto;padding:0;margin:0"></td>
+            <td>${t.hoTen||''}</td>
+            <td>${r.khoaTen||''}</td>
+            <td>${fmtDateRange(r.tuNgay,r.denNgay)}</td>
+            <td>${r.nguoiHuongDan||'—'}</td>
+            <td>${r.nguoiKy||'—'}</td>
+            <td>${fmtDate(r.ngayKy)}</td>
+          </tr>`).join('')}
+          </tbody>
+        </table>
+        <div class="row-flex" style="margin-top:12px">
+          <button type="button" id="done-batch-reopen">↩️ Mở lại hàng loạt các mục đã chọn</button>
+        </div>
+        `}
+      </div>
     `;
+    let tcKhoaChonId = tc.khoaId || '';
+    createSearchableSelect(content.querySelector('#tc-khoa-ssel'),
+      [{ id:'', label:'— Tất cả khoa —' }].concat(tatCaKhoaOptions.map(u=>({ id:u.id, label:u.name }))),
+      {
+        placeholder: 'Gõ tên khoa để tìm...',
+        initialId: tc.khoaId || '',
+        onSelect: (id)=>{ tcKhoaChonId = id || ''; },
+      }
+    );
+    content.querySelector('#tc-loc').onclick = ()=>{
+      state.traCuuKhoa = {
+        khoaId: tcKhoaChonId,
+        from: content.querySelector('#tc-tu').value,
+        to: content.querySelector('#tc-den').value,
+      };
+      renderTraineeByKhoaView(content);
+    };
+    content.querySelector('#tc-xoa-loc').onclick = ()=>{
+      state.traCuuKhoa = { khoaId:'', from:'', to:'' };
+      renderTraineeByKhoaView(content);
+    };
+    const btnTcExportWord = content.querySelector('#tc-export-word');
+    if (btnTcExportWord) btnTcExportWord.onclick = ()=>{
+      const tenKhoaDangLoc = tc.khoaId ? (state.config.units.find(u=>u.id===tc.khoaId)||{}).name || '' : '';
+      const rowsHtml = traCuuKetQua.map(({t,r},i)=>
+        '<tr><td style="text-align:center">'+(i+1)+'</td><td>'+(t.hoTen||'')+'</td>' +
+        (tc.khoaId ? '' : '<td>'+(r.khoaTen||'')+'</td>') +
+        '<td style="text-align:center">'+fmtDate(r.tuNgay)+' – '+fmtDate(r.denNgay)+'</td>' +
+        '<td>'+(r.nguoiHuongDan||'')+'</td>' +
+        '<td style="text-align:center">'+(r.trangThai==='Đã phân công'?'Đã phân công':'Chờ phân công')+'</td></tr>'
+      ).join('');
+      // Chữ ký + tên Trưởng khoa thật lấy từ dữ liệu ĐÃ LƯU trong hồ sơ từng học viên (Firebase),
+      // KHÔNG dùng state.lastSignatureDataUrl vì cái đó chỉ tồn tại tạm trong trình duyệt của khoa lúc ký,
+      // Phòng CĐT mở ở máy khác sẽ không có — nên phải lấy lại từ chính dữ liệu đã ký lưu trên hồ sơ.
+      const tenPho = {}; const kyPho = {};
+      traCuuKetQua.forEach(({r})=>{
+        if (r.nguoiKy) tenPho[r.nguoiKy] = (tenPho[r.nguoiKy]||0) + 1;
+        if (r.chuKyImage) kyPho[r.chuKyImage] = (kyPho[r.chuKyImage]||0) + 1;
+      });
+      const tenPhoBienNhat = Object.keys(tenPho).sort((a,b)=>tenPho[b]-tenPho[a])[0] || '';
+      const anhKyPhoBien = Object.keys(kyPho).sort((a,b)=>kyPho[b]-kyPho[a])[0] || '';
+      const tieuDe = 'DANH SÁCH HỌC VIÊN' + (tenKhoaDangLoc ? ' TẠI ' + tenKhoaDangLoc.toUpperCase() : ' TOÀN VIỆN') +
+        ((tc.from||tc.to) ? ' (TỪ ' + (tc.from?fmtDate(tc.from):'…') + ' ĐẾN ' + (tc.to?fmtDate(tc.to):'…') + ')' : '');
+      const bodyHtml =
+        '<table class="kv" style="table-layout:fixed"><colgroup><col style="width:42%"><col style="width:58%"></colgroup><tr>' +
+          '<td style="width:42%;vertical-align:middle" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:11pt;white-space:nowrap" nowrap="nowrap">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br>PHÒNG CHỈ ĐẠO TUYẾN</div></td>' +
+          '<td style="width:58%;vertical-align:middle" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:12.5pt" nowrap="nowrap">' + tieuDe + '</div></td>' +
+        '</tr></table>' +
+        '<p style="margin-top:14px">Tổng số học viên: <b>'+traCuuKetQua.length+'</b></p>' +
+        '<table class="data"><thead><tr><th style="width:5%">STT</th><th style="width:'+(tc.khoaId?'25%':'20%')+'">Học viên</th>' +
+        (tc.khoaId ? '' : '<th style="width:18%">Khoa</th>') +
+        '<th style="width:20%">Thời gian</th><th style="width:'+(tc.khoaId?'25%':'20%')+'">Người hướng dẫn</th><th style="width:15%">Trạng thái</th></tr></thead>' +
+        '<tbody>'+rowsHtml+'</tbody></table>' +
+        '<table class="sign-block"><tr><td style="width:50%">&nbsp;</td><td style="width:50%">Gia Lai, ngày ..... tháng ..... năm '+new Date().getFullYear()+'<br>' + (tenKhoaDangLoc ? 'TRƯỞNG KHOA' : 'TRƯỞNG PHÒNG CHỈ ĐẠO TUYẾN') + '<br><span class="sign-note">(Ký, ghi rõ họ tên)</span><br>' +
+          (anhKyPhoBien
+            ? '<img src="'+anhKyPhoBien+'" width="110" height="48" style="width:110px;height:48px;mso-width-source:userset;mso-height-source:userset;display:block;margin:0 auto" alt="Chữ ký" />'
+            : '<br><br><br><br>') +
+          (tenPhoBienNhat ? '<div style="font-weight:bold">'+tenPhoBienNhat+'</div>' : '') +
+        '</td></tr></table>' +
+        (!anhKyPhoBien ? '<p class="muted" style="text-align:right;font-size:10.5pt;font-style:italic;margin-top:2px">(Danh sách có học viên chưa ký — cần khoa ký bổ sung trước khi lưu hồ sơ chính thức)</p>' : '');
+      exportWordCustomDoc(tieuDe, bodyHtml, 'danh_sach_hoc_vien_' + (tenKhoaDangLoc||'toan_vien').replace(/\s+/g,'_') + '_' + todayISO() + '.doc', { landscape:false });
+    };
     content.querySelectorAll('[data-copy-khoa-link]').forEach(b=>{
       b.onclick = async ()=>{
         const khoaId = b.getAttribute('data-copy-khoa-link');
@@ -6247,6 +6718,87 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         catch(e){ prompt('Copy link dưới đây gửi cho khoa "'+u.name+'":', url); }
       };
     });
+
+    content.querySelectorAll('[data-cho-checkall-khoa]').forEach(b=>{
+      b.onclick = ()=>{
+        const khoaId = b.getAttribute('data-cho-checkall-khoa');
+        const card = content.querySelector('[data-khoa-card="'+khoaId+'"]');
+        if (!card) return;
+        card.querySelectorAll('[data-cho-check]').forEach(c=>c.checked = true);
+        capNhatSoDaChonCho();
+      };
+    });
+    content.querySelectorAll('[data-cho-uncheckall-khoa]').forEach(b=>{
+      b.onclick = ()=>{
+        const khoaId = b.getAttribute('data-cho-uncheckall-khoa');
+        const card = content.querySelector('[data-khoa-card="'+khoaId+'"]');
+        if (!card) return;
+        card.querySelectorAll('[data-cho-check]').forEach(c=>c.checked = false);
+        capNhatSoDaChonCho();
+      };
+    });
+
+    // ====== Phần "Đang chờ" — chọn nhiều & xoá hàng loạt (dọn nhanh dữ liệu test) ======
+    const choChecks = () => Array.from(content.querySelectorAll('[data-cho-check]'));
+    function capNhatSoDaChonCho(){
+      const n = choChecks().filter(c=>c.checked).length;
+      const el = content.querySelector('#cho-count-sel');
+      if (el) el.textContent = n + ' mục đã chọn';
+    }
+    choChecks().forEach(c=>{ c.onchange = capNhatSoDaChonCho; });
+    const btnChoCheckAll = content.querySelector('#cho-check-all');
+    if (btnChoCheckAll) btnChoCheckAll.onclick = ()=>{ choChecks().forEach(c=>c.checked = true); capNhatSoDaChonCho(); };
+    const btnChoCheckNone = content.querySelector('#cho-check-none');
+    if (btnChoCheckNone) btnChoCheckNone.onclick = ()=>{ choChecks().forEach(c=>c.checked = false); capNhatSoDaChonCho(); };
+    const btnChoBatchDel = content.querySelector('#cho-batch-del');
+    if (btnChoBatchDel) btnChoBatchDel.onclick = async ()=>{
+      const selected = choChecks().filter(c=>c.checked).map(c=>c.getAttribute('data-cho-check'));
+      if (!selected.length){ alert('Chưa chọn mục nào để xoá.'); return; }
+      if (!confirm('Xoá hẳn ' + selected.length + ' đề nghị phân công đang chờ đã chọn?\n\nCác mục này sẽ biến mất khỏi danh sách chờ của khoa. Có thể gửi lại đề nghị mới sau nếu cần. Thao tác này KHÔNG áp dụng cho các mục đã "Đã phân công" (đã ký).')) return;
+      const traineesToSave = new Map();
+      selected.forEach(key=>{
+        const [traineeId, reqId] = key.split('::');
+        const t = visibleTrainees().find(x=>x.id===traineeId);
+        if (!t) return;
+        t.deNghiPhanCongList = (t.deNghiPhanCongList||[]).filter(x=>x.id!==reqId);
+        traineesToSave.set(t.id, t);
+      });
+      for (const t of traineesToSave.values()){ await saveTrainee(t); }
+      showToast('Đã xoá ' + selected.length + ' đề nghị đang chờ.');
+      renderTraineeByKhoaView(content);
+    };
+
+    // ====== Phần "Đã phân công" — chọn nhiều & mở lại hàng loạt ======
+    const doneChecks = () => Array.from(content.querySelectorAll('[data-done-check]'));
+    function capNhatSoDaChon(){
+      const n = doneChecks().filter(c=>c.checked).length;
+      const el = content.querySelector('#done-count-sel');
+      if (el) el.textContent = n + ' mục đã chọn';
+    }
+    doneChecks().forEach(c=>{ c.onchange = capNhatSoDaChon; });
+    const btnCheckAll = content.querySelector('#done-check-all');
+    if (btnCheckAll) btnCheckAll.onclick = ()=>{ doneChecks().forEach(c=>c.checked = true); capNhatSoDaChon(); };
+    const btnCheckNone = content.querySelector('#done-check-none');
+    if (btnCheckNone) btnCheckNone.onclick = ()=>{ doneChecks().forEach(c=>c.checked = false); capNhatSoDaChon(); };
+    const btnBatchReopen = content.querySelector('#done-batch-reopen');
+    if (btnBatchReopen) btnBatchReopen.onclick = async ()=>{
+      const selected = doneChecks().filter(c=>c.checked).map(c=>c.getAttribute('data-done-check'));
+      if (!selected.length){ alert('Chưa chọn mục nào để mở lại.'); return; }
+      if (!confirm('Mở lại ' + selected.length + ' mục đã chọn?\n\nCác hồ sơ sẽ quay về trạng thái "Chờ phân công", khoa dùng lại đúng link cũ để chọn/ký lại. Nếu Quyết định/Phụ lục đã trình ký Giám đốc dựa trên dữ liệu cũ, cần rà soát lại các văn bản đó sau khi mở lại.')) return;
+      const traineesToSave = new Map();
+      selected.forEach(key=>{
+        const [traineeId, reqId] = key.split('::');
+        const t = visibleTrainees().find(x=>x.id===traineeId);
+        if (!t) return;
+        const r = (t.deNghiPhanCongList||[]).find(x=>x.id===reqId);
+        if (!r) return;
+        r.trangThai = 'Chờ phân công';
+        traineesToSave.set(t.id, t);
+      });
+      for (const t of traineesToSave.values()){ await saveTrainee(t); }
+      showToast('Đã mở lại ' + selected.length + ' mục — quay về trạng thái "Chờ phân công".');
+      renderTraineeByKhoaView(content);
+    };
   }
 
   function renderTraineeStatsView(content){
@@ -6318,6 +6870,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         <h3 style="font-size:15px">Thống kê theo chức danh đăng ký</h3>
         <div class="row-flex" style="margin-bottom:10px">
           <button class="secondary" id="bk-export-excel">📊 Xuất Excel</button>
+          <button class="secondary" id="bk-export-word">🖨️ Xuất Word</button>
         </div>
         <table>
           <thead><tr><th>STT</th><th>Chức danh</th><th>Số học viên</th></tr></thead>
@@ -6341,6 +6894,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         <div class="row-flex" style="margin-bottom:10px">
           <input id="bu-search" placeholder="🔎 Tìm theo tên khoa/phòng..." style="max-width:280px" />
           <button class="secondary" id="bu-export-excel">📊 Xuất Excel (theo khoa)</button>
+          <button class="secondary" id="bu-export-word">🖨️ Xuất Word (theo khoa)</button>
         </div>
         <p class="muted" style="margin:0 0 8px">Tổng số khoa/phòng đang có hoạt động: <b>${byUnit.length}</b></p>
         <div class="scroll-table-wrap">
@@ -6376,6 +6930,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         <div class="row-flex" style="margin-bottom:10px">
           <input id="al-search" placeholder="🔎 Tìm theo tên học viên hoặc khoa..." style="max-width:300px" />
           <button class="secondary" id="al-export-excel">📊 Xuất Excel (danh sách học viên)</button>
+          <button class="secondary" id="al-export-word">🖨️ Xuất Word (danh sách học viên)</button>
         </div>
         <div id="al-result-wrap"></div>
       </div>
@@ -6412,15 +6967,15 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         <p class="muted" style="margin-top:0">Tổng số đủ điều kiện hướng dẫn: <b>${byInstructor.length}</b> — Đang hướng dẫn ít nhất 1 học viên trong khoảng đã lọc: <b>${byInstructor.filter(x=>x.dangHuongDan>0).length}</b> — Đang hiển thị: <b>${list.length}</b></p>
         <div class="row-flex" style="margin-bottom:10px">
           <button class="secondary" id="bi-export-excel">📊 Xuất Excel (theo người hướng dẫn)</button>
+          <button class="secondary" id="bi-export-word">🖨️ Xuất Word (theo người hướng dẫn)</button>
         </div>
         <div class="scroll-table-wrap">
         <table>
-          <thead><tr><th>STT</th><th>Người hướng dẫn</th><th>Khoa/Phòng</th><th>Đang hướng dẫn</th><th>Đến hạn CNKT (chu kỳ 5 năm)</th><th></th></tr></thead>
+          <thead><tr><th>STT</th><th>Người hướng dẫn</th><th>Chức danh</th><th>Khoa/Phòng</th><th>Đang hướng dẫn</th><th></th></tr></thead>
           <tbody>${list.map((r,i)=>`
             <tr>
-              <td style="text-align:center">${i+1}</td><td>${r.name}</td><td>${r.donVi}</td>
+              <td style="text-align:center">${i+1}</td><td>${r.name}</td><td>${r.chucDanh||'—'}</td><td>${r.donVi}</td>
               <td>${r.dangHuongDan>=5?`<span class="pill red">${r.dangHuongDan}/5 — Đã đầy</span>`:(r.dangHuongDan>0?`<span class="pill amber">${r.dangHuongDan}/5</span>`:`<span class="pill gray">0/5</span>`)}</td>
-              <td>${fmtDate(r.hanChuKy)}${r.sapDenHanCNKT?' <span class="pill amber">Sắp đến hạn</span>':''}</td>
               <td>${r.dangHuongDan>0?`<button class="ghost small-btn" data-instr-detail="${r.id}">👁️ Chi tiết</button>`:''}</td>
             </tr>`).join('') || '<tr><td colspan="6" style="text-align:center">Không có người hướng dẫn phù hợp với bộ lọc.</td></tr>'}</tbody>
         </table>
@@ -6436,9 +6991,24 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         };
       });
       document.getElementById('bi-export-excel').onclick = ()=>{
-        exportCsvGeneric(['Người hướng dẫn','Khoa/Phòng','Đang hướng dẫn','Đến hạn CNKT (chu kỳ 5 năm)'],
-          list.map(r=>[r.name, r.donVi, r.dangHuongDan+'/5', fmtDate(r.hanChuKy)]),
+        exportCsvGeneric(['Người hướng dẫn','Chức danh','Khoa/Phòng','Đang hướng dẫn'],
+          list.map(r=>[r.name, r.chucDanh||'', r.donVi, r.dangHuongDan+'/5']),
           'thongke_nguoihuongdan_'+todayISO()+'.csv');
+      };
+      document.getElementById('bi-export-word').onclick = ()=>{
+        const rowsHtml = list.map((r,i)=>
+          '<tr><td style="text-align:center">'+(i+1)+'</td><td>'+(r.name||'')+'</td><td>'+(r.chucDanh||'')+'</td><td>'+(r.donVi||'')+'</td>' +
+          '<td style="text-align:center">'+r.dangHuongDan+'/5</td></tr>'
+        ).join('') || '<tr><td colspan="5" style="text-align:center">Không có người hướng dẫn phù hợp với bộ lọc.</td></tr>';
+        const khoangNgay = (inf.from===inf.to) ? ('tại ngày ' + fmtDate(inf.from)) : ('từ ' + fmtDate(inf.from) + ' đến ' + fmtDate(inf.to));
+        const bodyHtml = quocHieuBlockHtml() +
+          '<div class="doc-title">THỐNG KÊ CHI TIẾT NGƯỜI HƯỚNG DẪN</div>' +
+          '<div class="doc-trichyeu">Tính ' + khoangNgay + '</div>' +
+          '<p>Tổng số đủ điều kiện hướng dẫn: <b>'+byInstructor.length+'</b> — Đang hiển thị: <b>'+list.length+'</b></p>' +
+          '<table class="data"><thead><tr><th style="width:6%">STT</th><th style="width:26%">Người hướng dẫn</th><th style="width:18%">Chức danh</th><th style="width:28%">Khoa/Phòng</th><th style="width:22%">Đang hướng dẫn</th></tr></thead>' +
+          '<tbody>'+rowsHtml+'</tbody></table>' +
+          '<table class="sign-block"><tr><td style="width:50%">&nbsp;</td><td style="width:50%">Gia Lai, ngày ..... tháng ..... năm '+new Date().getFullYear()+'<br>TRƯỞNG PHÒNG CHỈ ĐẠO TUYẾN<br><span class="sign-note">(Ký, ghi rõ họ tên)</span><br><br><br><br></td></tr></table>';
+        exportWordCustomDoc('THỐNG KÊ NGƯỜI HƯỚNG DẪN', bodyHtml, 'thongke_nguoihuongdan_'+todayISO()+'.doc', { landscape:false });
       };
     }
     function refreshInstr(){
@@ -6484,6 +7054,24 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       exportCsvGeneric(['Học viên','Chức danh','Đơn vị/trường cử đi','Khoa thực hành','Người hướng dẫn','Từ ngày','Đến ngày','Trạng thái'],
         list.map(m=>[m.hoTen, m.chucDanh, m.donViCuTri, m.khoa, m.nguoiHuongDan, fmtDate(m.tuNgay), fmtDate(m.denNgay), m.trangThai||'']),
         'danh_sach_hocvien_dangthuchanh_'+todayISO()+'.csv');
+    };
+    document.getElementById('al-export-word').onclick = ()=>{
+      const q = document.getElementById('al-search').value.trim().toLowerCase();
+      const list = allActiveTrainees.filter(m=> !q || m.hoTen.toLowerCase().includes(q) || (m.khoa||'').toLowerCase().includes(q));
+      const rowsHtml = list.map((m,i)=>
+        '<tr><td style="text-align:center">'+(i+1)+'</td><td>'+(m.hoTen||'')+'</td><td>'+(m.chucDanh||'')+'</td>' +
+        '<td>'+(m.donViCuTri||'')+'</td><td>'+(m.khoa||'')+'</td><td>'+(m.nguoiHuongDan||'')+'</td>' +
+        '<td style="text-align:center">'+fmtDateRange(m.tuNgay, m.denNgay)+'</td><td>'+(m.trangThai||'')+'</td></tr>'
+      ).join('') || '<tr><td colspan="8" style="text-align:center">Không có học viên nào đang thực hành trong khoảng ngày đã lọc.</td></tr>';
+      const khoangNgay = (inf.from===inf.to) ? ('tại ngày ' + fmtDate(inf.from)) : ('từ ' + fmtDate(inf.from) + ' đến ' + fmtDate(inf.to));
+      const bodyHtml = quocHieuBlockHtml() +
+        '<div class="doc-title">DANH SÁCH HỌC VIÊN ĐANG THỰC HÀNH</div>' +
+        '<div class="doc-trichyeu">Tính ' + khoangNgay + '</div>' +
+        '<p>Tổng số học viên: <b>'+list.length+'</b></p>' +
+        '<table class="data"><thead><tr><th style="width:4%">STT</th><th style="width:16%">Học viên</th><th style="width:10%">Chức danh</th><th style="width:14%">Đơn vị/trường cử đi</th><th style="width:16%">Khoa thực hành</th><th style="width:14%">Người hướng dẫn</th><th style="width:16%">Thời gian giai đoạn</th><th style="width:10%">Trạng thái</th></tr></thead>' +
+        '<tbody>'+rowsHtml+'</tbody></table>' +
+        '<table class="sign-block"><tr><td style="width:50%">&nbsp;</td><td style="width:50%">Gia Lai, ngày ..... tháng ..... năm '+new Date().getFullYear()+'<br>TRƯỞNG PHÒNG CHỈ ĐẠO TUYẾN<br><span class="sign-note">(Ký, ghi rõ họ tên)</span><br><br><br><br></td></tr></table>';
+      exportWordCustomDoc('DANH SÁCH HỌC VIÊN ĐANG THỰC HÀNH', bodyHtml, 'danh_sach_hocvien_dangthuchanh_'+todayISO()+'.doc', { landscape:true });
     };
     document.getElementById('hs-apply').onclick = ()=>{
       state.hvStatsFilter.from = document.getElementById('hs-from').value;
@@ -6548,6 +7136,17 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     document.getElementById('bk-export-excel').onclick = ()=>{
       exportCsvGeneric(['Chức danh','Số học viên'], byChucDanh.map(([k,v])=>[k,v]), 'thongke_hocvien_chucdanh_'+todayISO()+'.csv');
     };
+    document.getElementById('bk-export-word').onclick = ()=>{
+      const rowsHtml = byChucDanh.map(([k,v],i)=>
+        '<tr><td style="text-align:center">'+(i+1)+'</td><td>'+k+'</td><td style="text-align:center">'+v+'</td></tr>'
+      ).join('') || '<tr><td colspan="3" style="text-align:center">Chưa có dữ liệu.</td></tr>';
+      const bodyHtml = quocHieuBlockHtml() +
+        '<div class="doc-title">THỐNG KÊ HỌC VIÊN THEO CHỨC DANH ĐĂNG KÝ</div>' +
+        '<table class="data"><thead><tr><th style="width:10%">STT</th><th style="width:60%">Chức danh</th><th style="width:30%">Số học viên</th></tr></thead>' +
+        '<tbody>'+rowsHtml+'</tbody></table>' +
+        '<table class="sign-block"><tr><td style="width:50%">&nbsp;</td><td style="width:50%">Gia Lai, ngày ..... tháng ..... năm '+new Date().getFullYear()+'<br>TRƯỞNG PHÒNG CHỈ ĐẠO TUYẾN<br><span class="sign-note">(Ký, ghi rõ họ tên)</span><br><br><br><br></td></tr></table>';
+      exportWordCustomDoc('THỐNG KÊ HỌC VIÊN THEO CHỨC DANH', bodyHtml, 'thongke_hocvien_chucdanh_'+todayISO()+'.doc', { landscape:false });
+    };
     document.getElementById('bu-search').oninput = (e)=>{
       const q = e.target.value.trim().toLowerCase();
       document.querySelectorAll('#bu-tbody tr').forEach(tr=>{
@@ -6559,22 +7158,44 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         byUnit.map((r,i)=>[i+1, r.name, r.hienTai, r.moiTrongThang, r.ketThuc, r.soNguoiHuongDan, r.dangHuongDan, r.tyLe, r.khaNangNhanThem]),
         'thongke_hocvien_theokhoa_'+todayISO()+'.csv');
     };
+    document.getElementById('bu-export-word').onclick = ()=>{
+      const rowsHtml = byUnit.map((r,i)=>
+        '<tr><td style="text-align:center">'+(i+1)+'</td><td>'+(r.name||'')+'</td>' +
+        '<td style="text-align:center">'+r.hienTai+'</td><td style="text-align:center">'+r.moiTrongThang+'</td>' +
+        '<td style="text-align:center">'+r.ketThuc+'</td><td style="text-align:center">'+r.soNguoiHuongDan+'</td>' +
+        '<td style="text-align:center">'+r.dangHuongDan+'</td><td style="text-align:center">'+r.tyLe+'</td>' +
+        '<td style="text-align:center">'+(r.khaNangNhanThem>0?(r.khaNangNhanThem+' chỗ'):'Đã đầy')+'</td></tr>'
+      ).join('') || '<tr><td colspan="9" style="text-align:center">Chưa có khoa/phòng nào đang nhận học viên.</td></tr>';
+      const khoangNgay = (inf.from===inf.to) ? ('tại ngày ' + fmtDate(inf.from)) : ('từ ' + fmtDate(inf.from) + ' đến ' + fmtDate(inf.to));
+      const bodyHtml = quocHieuBlockHtml() +
+        '<div class="doc-title">THỐNG KÊ HỌC VIÊN &amp; NGƯỜI HƯỚNG DẪN THEO KHOA/PHÒNG</div>' +
+        '<div class="doc-trichyeu">Tính ' + khoangNgay + '</div>' +
+        '<p>Tổng số khoa/phòng đang có hoạt động: <b>'+byUnit.length+'</b></p>' +
+        '<table class="data"><thead><tr><th style="width:5%">STT</th><th style="width:22%">Khoa/Phòng</th><th style="width:10%">Học viên hiện tại</th><th style="width:10%">Mới trong tháng</th><th style="width:11%">Đã kết thúc (luỹ kế)</th><th style="width:11%">Số người hướng dẫn</th><th style="width:11%">Đang hướng dẫn</th><th style="width:10%">Tỷ lệ HV/HD</th><th style="width:10%">Còn khả năng nhận thêm</th></tr></thead>' +
+        '<tbody>'+rowsHtml+'</tbody></table>' +
+        '<table class="sign-block"><tr><td style="width:50%">&nbsp;</td><td style="width:50%">Gia Lai, ngày ..... tháng ..... năm '+new Date().getFullYear()+'<br>TRƯỞNG PHÒNG CHỈ ĐẠO TUYẾN<br><span class="sign-note">(Ký, ghi rõ họ tên)</span><br><br><br><br></td></tr></table>';
+      exportWordCustomDoc('THỐNG KÊ HỌC VIÊN THEO KHOA/PHÒNG', bodyHtml, 'thongke_hocvien_theokhoa_'+todayISO()+'.doc', { landscape:true });
+    };
   }
 
   function openInstructorDetailModal(emp, fromDate, toDate){
     if (!emp) return;
     const list = getMenteeDetailsAtRange(emp.id, fromDate, toDate);
     const rangeLabel = (fromDate===toDate) ? ('tại ngày ' + fmtDate(fromDate)) : ('từ ' + fmtDate(fromDate) + ' đến ' + fmtDate(toDate));
-    const overlay = el(`<div class="modal-overlay"><div class="modal" style="max-width:760px">
-      <h3>👁️ Chi tiết hướng dẫn — ${emp.hoTen}</h3>
+    let daPhongTo = false;
+    const overlay = el(`<div class="modal-overlay"><div class="modal" id="id-modal-box" style="max-width:760px">
+      <div class="row-flex" style="justify-content:space-between;align-items:center">
+        <h3 style="margin:0">👁️ Chi tiết hướng dẫn — ${emp.hoTen}</h3>
+        <button type="button" class="ghost small-btn" id="id-phongto">🔍 Phóng to</button>
+      </div>
       <p class="muted" style="margin-top:-6px">Danh sách học viên đang được hướng dẫn ${rangeLabel} (${list.length} học viên).</p>
       ${list.length ? `
         <div class="scroll-table-wrap">
         <table>
-          <thead><tr><th>Học viên</th><th>Đơn vị/trường cử đi</th><th>Khoa thực hành</th><th>Thời gian giai đoạn</th><th>Trạng thái</th></tr></thead>
-          <tbody>${list.map(m=>`
+          <thead><tr><th style="width:40px">STT</th><th>Học viên</th><th>Chức danh</th><th>Đơn vị/trường cử đi</th><th>Khoa thực hành</th><th>Thời gian giai đoạn</th><th>Trạng thái</th></tr></thead>
+          <tbody>${list.map((m,i)=>`
             <tr>
-              <td>${m.hoTen}</td><td>${m.donViCuTri}</td><td>${m.khoa||''}</td>
+              <td style="text-align:center">${i+1}</td><td>${m.hoTen}</td><td>${m.chucDanh||'—'}</td><td>${m.donViCuTri}</td><td>${m.khoa||''}</td>
               <td>${fmtDateRange(m.tuNgay, m.denNgay)}</td><td>${m.trangThai||''}</td>
             </tr>`).join('')}</tbody>
         </table>
@@ -6586,6 +7207,13 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     </div></div>`);
     root.appendChild(overlay);
     overlay.querySelector('#id-close').onclick = ()=> overlay.remove();
+    overlay.querySelector('#id-phongto').onclick = (e)=>{
+      daPhongTo = !daPhongTo;
+      const box = overlay.querySelector('#id-modal-box');
+      box.style.maxWidth = daPhongTo ? '95vw' : '760px';
+      box.style.width = daPhongTo ? '95vw' : '';
+      e.target.textContent = daPhongTo ? '↙️ Thu nhỏ' : '🔍 Phóng to';
+    };
   }
 
   // ---- Nhập nhiều học viên cùng lúc từ Excel — thay vì Admin phải gõ tay từng người, chỉ cần
