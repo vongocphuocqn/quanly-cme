@@ -977,11 +977,56 @@ https://github.com/nodeca/pako/blob/main/LICENSE
   const root = document.getElementById('cnkt-root');
 
   function render(){
+    if (!state.role && state._chonKhoaGateway) { renderChonKhoaGateway(); return; }
     if (!state.role) { renderLogin(); return; }
     if (state.role === 'unit') { renderUnitApp(); return; }
     if (state.role === 'admin') { renderAdminApp(); return; }
     if (state.role === 'employee') { renderEmployeeApp(); return; }
     if (state.role === 'trainee') { renderTraineeApp(); return; }
+  }
+
+  function renderChonKhoaGateway(){
+    setUrlPath('chon-khoa');
+    const units = (state.config.units||[]).slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+    root.innerHTML = `
+      <div class="topbar">
+        <div class="title-wrap">
+          <img src="${LOGO_SRC}" class="logo" alt="Logo bệnh viện" />
+          <div class="title-block">
+            <div class="org">Bệnh viện Đa khoa Trung tâm tỉnh Gia Lai</div>
+            <div class="title">Phòng Chỉ đạo tuyến — Quản lý Cập nhật kiến thức y khoa liên tục</div>
+            <div style="opacity:0.6;font-size:10px;color:#fff">build ${APP_BUILD_VERSION}</div>
+          </div>
+        </div>
+      </div>
+      <div class="login-screen">
+        <img src="${LOGO_SRC}" class="logo-big" alt="Logo bệnh viện" />
+        <h2>Phân công hướng dẫn học viên thực hành</h2>
+        <div class="sub">Chọn đúng tên Khoa/Phòng của anh/chị để vào trang phân công — không cần nhớ mã PIN hay đường link riêng.</div>
+        <div class="card" style="max-width:520px;margin:18px auto 0;text-align:left">
+          <div class="field">
+            <label>Khoa/Phòng của anh/chị</label>
+            <div id="ck-khoa-ssel"></div>
+          </div>
+          <button id="ck-go" style="width:100%;margin-top:14px" disabled>➡️ Vào trang phân công của khoa này</button>
+          <p class="muted" style="margin-top:10px;font-size:12.5px">Nếu không tìm thấy đúng tên khoa/phòng, liên hệ Phòng Chỉ đạo tuyến để được hỗ trợ.</p>
+        </div>
+      </div>
+    `;
+    let chosenUnitId = '';
+    const btnGo = document.getElementById('ck-go');
+    createSearchableSelect(document.getElementById('ck-khoa-ssel'),
+      units.map(u=>({ id:u.id, label:u.name })),
+      {
+        placeholder: 'Gõ tên khoa/phòng để tìm...',
+        onSelect: (id)=>{ chosenUnitId = id || ''; btnGo.disabled = !chosenUnitId; },
+      }
+    );
+    btnGo.onclick = ()=>{
+      const u = units.find(x=>x.id===chosenUnitId);
+      if (!u) return;
+      window.location.href = window.location.origin + window.location.pathname + '?unit=' + encodeURIComponent(u.id) + '&pin=' + encodeURIComponent(u.pin) + '&tab=phancong';
+    };
   }
 
   function el(html){ const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstChild; }
@@ -1621,8 +1666,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             <h3 style="font-size:14px;margin:0">Đã phân công (${xong.length} học viên)</h3>
             <button type="button" class="secondary" id="dnpc-xuat-tonghop-word">🖨️ In / Xuất Word bảng tổng hợp</button>
           </div>
-          <table><thead><tr><th>Học viên</th><th>Thời gian</th><th>Người hướng dẫn</th><th>Chữ ký</th><th>Đính kèm</th></tr></thead>
-          <tbody>${xong.map(({t,r})=>`<tr><td>${t.hoTen}</td><td>${fmtDateRange(r.tuNgay,r.denNgay)}</td><td>${r.nguoiHuongDan}</td><td style="text-align:center">${reqChuKyCellHtml(r)}</td><td style="text-align:center">${reqAttachCellHtml(r)}</td></tr>`).join('')}</tbody></table>
+          <table><thead><tr><th>Học viên</th><th>Thời gian</th><th>Số tháng</th><th>Người hướng dẫn</th><th>Chữ ký</th><th>Đính kèm</th></tr></thead>
+          <tbody>${xong.map(({t,r})=>`<tr><td>${t.hoTen}</td><td>${fmtDateRange(r.tuNgay,r.denNgay)}</td><td style="text-align:center">${monthsDecimal(r.tuNgay,r.denNgay).toFixed(1)}</td><td>${r.nguoiHuongDan}</td><td style="text-align:center">${reqChuKyCellHtml(r)}</td><td style="text-align:center">${reqAttachCellHtml(r)}</td></tr>`).join('')}</tbody></table>
           ${(()=>{
             const tenPho = {};
             xong.forEach(({r})=>{ if (r.nguoiKy) tenPho[r.nguoiKy] = (tenPho[r.nguoiKy]||0) + 1; });
@@ -1649,6 +1694,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       const rowsHtml = xong.map(({t,r},i)=>
         '<tr><td style="text-align:center">'+(i+1)+'</td><td>'+(t.hoTen||'')+'</td>' +
         '<td style="text-align:center">'+fmtDate(r.tuNgay)+' – '+fmtDate(r.denNgay)+'</td>' +
+        '<td style="text-align:center">'+monthsDecimal(r.tuNgay,r.denNgay).toFixed(1)+'</td>' +
         '<td>'+(r.nguoiHuongDan||'')+'</td><td></td></tr>'
       ).join('');
       const tenPho = {};
@@ -1662,7 +1708,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             '<div style="text-align:center;font-weight:bold;font-size:11pt;white-space:nowrap" nowrap="nowrap">HỌC VIÊN THỰC HÀNH TẠI ' + (state.unitName||'').toUpperCase() + '</div></td>' +
         '</tr></table>' +
         '<p style="margin-top:14px">Tổng số học viên đã phân công người hướng dẫn: <b>'+xong.length+'</b></p>' +
-        '<table class="data"><thead><tr><th style="width:6%">STT</th><th style="width:26%">Học viên</th><th style="width:24%">Thời gian thực hành</th><th style="width:24%">Người hướng dẫn</th><th style="width:20%">Ghi chú</th></tr></thead>' +
+        '<table class="data"><thead><tr><th style="width:6%">STT</th><th style="width:24%">Học viên</th><th style="width:20%">Thời gian thực hành</th><th style="width:10%">Số tháng</th><th style="width:22%">Người hướng dẫn</th><th style="width:18%">Ghi chú</th></tr></thead>' +
         '<tbody>'+rowsHtml+'</tbody></table>' +
         '<table class="sign-block"><tr><td style="width:50%">&nbsp;</td><td style="width:50%">Gia Lai, ngày ..... tháng ..... năm '+new Date().getFullYear()+'<br>TRƯỞNG KHOA<br><span class="sign-note">(Ký, ghi rõ họ tên)</span><br>' +
           (anhKy
@@ -5944,8 +5990,6 @@ https://github.com/nodeca/pako/blob/main/LICENSE
   // trong cùng nhóm ngay tại Bước 2 nếu muốn, miễn đúng tổng số tháng theo quy định.
   const ROTATION_TEMPLATES_SEED = [
     { ten: 'Bác sĩ Y khoa — 12 tháng (Phụ lục I mục A)', stages: [
-      { search: ['cấp cứu'], soThang: 1, ghiChu: 'Nhóm 1 — Hồi sức cấp cứu (7 khoa, chọn 1 khoa 1 tháng theo QĐ chung)' },
-      { search: ['hstc','hồi sức tích cực','chống độc'], soThang: 2, ghiChu: 'Nhóm 1 — Hồi sức cấp cứu (chọn 1 khoa 2 tháng theo QĐ chung)' },
       { search: ['nội tổng hợp'], soThang: 1, ghiChu: 'Nhóm 2 — Hệ Nội (10 khoa, chọn 2 khoa mỗi khoa 1 tháng — có thể đổi khoa Nội khác)' },
       { search: ['nội tim mạch'], soThang: 1, ghiChu: 'Nhóm 2 — Hệ Nội (10 khoa, chọn 2 khoa mỗi khoa 1 tháng — có thể đổi khoa Nội khác)' },
       { search: ['ngoại tổng hợp'], soThang: 1, ghiChu: 'Nhóm 3 — Hệ Ngoại (6 khoa, chọn 2 khoa mỗi khoa 1 tháng — có thể đổi khoa Ngoại khác)' },
@@ -5955,10 +5999,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       { search: ['nhi'], soThang: 1.5, exact: ['nhi','nhi khoa'], ghiChu: 'Nhóm 5 — Hệ Nhi (cố định theo QĐ chung: Nhi 1,5 tháng)' },
       { search: ['sơ sinh'], soThang: 0.5, ghiChu: 'Nhóm 5 — Hệ Nhi (cố định theo QĐ chung: Nhi Sơ sinh 0,5 tháng)' },
       { search: ['tai mũi họng','tmh'], soThang: 1, ghiChu: 'Nhóm 6 — Chuyên khoa lẻ (6 khoa, chọn 1 khoa 1 tháng — có thể đổi sang Mắt/RHM/YHCT/PHCN/Da liễu)' },
+      { search: ['cấp cứu'], soThang: 1, ghiChu: 'Nhóm 1 — Hồi sức cấp cứu (chọn 1 khoa 1 tháng) — xếp GẦN CUỐI để học viên vững tay nghề trước khi vào cấp cứu' },
+      { search: ['hstc','hồi sức tích cực','chống độc'], soThang: 2, ghiChu: 'Nhóm 1 — Hồi sức cấp cứu (chọn 1 khoa 2 tháng) — xếp CUỐI lộ trình' },
     ]},
     { ten: 'Bác sĩ Y học dự phòng — 12 tháng (Phụ lục I mục B)', stages: [
-      { search: ['cấp cứu'], soThang: 1, ghiChu: 'Nhóm 1 — Hồi sức cấp cứu (chọn 1 khoa 1 tháng theo QĐ chung)' },
-      { search: ['hstc','hồi sức tích cực','chống độc'], soThang: 2, ghiChu: 'Nhóm 1 — Hồi sức cấp cứu (chọn 1 khoa 2 tháng theo QĐ chung)' },
       { search: ['nội tổng hợp'], soThang: 1, ghiChu: 'Nhóm 2 — Hệ Nội (chọn 2 khoa mỗi khoa 1 tháng)' },
       { search: ['nội tim mạch'], soThang: 1, ghiChu: 'Nhóm 2 — Hệ Nội (chọn 2 khoa mỗi khoa 1 tháng)' },
       { search: ['ngoại tổng hợp'], soThang: 1, ghiChu: 'Nhóm 3 — Hệ Ngoại (chọn 2 khoa mỗi khoa 1 tháng)' },
@@ -5968,11 +6012,13 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       { search: ['nhi'], soThang: 1.5, exact: ['nhi','nhi khoa'], ghiChu: 'Nhóm 5 — Hệ Nhi (cố định: Nhi 1,5 tháng)' },
       { search: ['sơ sinh'], soThang: 0.5, ghiChu: 'Nhóm 5 — Hệ Nhi (cố định: Nhi Sơ sinh 0,5 tháng)' },
       { search: ['tai mũi họng','tmh'], soThang: 1, ghiChu: 'Nhóm 6 — Chuyên khoa lẻ (chọn 1 khoa 1 tháng)' },
+      { search: ['cấp cứu'], soThang: 1, ghiChu: 'Nhóm 1 — Hồi sức cấp cứu (chọn 1 khoa 1 tháng) — xếp GẦN CUỐI để học viên vững tay nghề trước khi vào cấp cứu' },
+      { search: ['hstc','hồi sức tích cực','chống độc'], soThang: 2, ghiChu: 'Nhóm 1 — Hồi sức cấp cứu (chọn 1 khoa 2 tháng) — xếp CUỐI lộ trình' },
     ]},
     { ten: 'Bác sĩ Răng Hàm Mặt — 12 tháng (Phụ lục I mục C)', stages: [
-      { search: ['cấp cứu'], soThang: 1, ghiChu: 'Nhóm 1 — Hồi sức cấp cứu (chọn 1 khoa 1 tháng theo QĐ chung)' },
-      { search: ['hstc','hồi sức tích cực','chống độc'], soThang: 2, ghiChu: 'Nhóm 1 — Hồi sức cấp cứu (chọn 1 khoa 2 tháng theo QĐ chung)' },
       { search: ['răng hàm mặt','rhm'], soThang: 9, ghiChu: 'Chuyên khoa chính — cố định Khoa Răng Hàm Mặt 9 tháng' },
+      { search: ['cấp cứu'], soThang: 1, ghiChu: 'Nhóm 1 — Hồi sức cấp cứu (chọn 1 khoa 1 tháng) — xếp GẦN CUỐI để học viên vững tay nghề trước khi vào cấp cứu' },
+      { search: ['hstc','hồi sức tích cực','chống độc'], soThang: 2, ghiChu: 'Nhóm 1 — Hồi sức cấp cứu (chọn 1 khoa 2 tháng) — xếp CUỐI lộ trình' },
     ]},
     { ten: 'Bác sĩ Y học cổ truyền — 12 tháng (Phụ lục I mục D)', stages: [
       { search: ['y học cổ truyền','yhct'], soThang: 9 },
@@ -6124,8 +6170,40 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       const candidates = state.trainees.filter(t=>
         (!t.giaiDoan || !t.giaiDoan.length) && (!t.deNghiPhanCongList || !t.deNghiPhanCongList.length)
       ).sort((a,b)=>(a.ngayTiepNhan||'').localeCompare(b.ngayTiepNhan||''));
+      const stragglers = state.trainees.filter(t=> t.giaiDoan && t.giaiDoan.length).sort((a,b)=>(a.hoTen||'').localeCompare(b.hoTen||''));
       body.innerHTML = `
         <p class="muted" style="margin-top:6px">Chỉ hiện học viên <b>chưa có giai đoạn/đề nghị phân công nào</b> (tránh tạo trùng với kế hoạch đã có sẵn). Nếu không thấy học viên cần tìm, có thể học viên đó đã được phân công một phần rồi — vào "Phân khoa" của người đó để xử lý riêng.</p>
+        ${stragglers.length ? `
+        <details style="margin-bottom:14px">
+          <summary style="cursor:pointer;font-weight:bold;color:#a8722a">🧹 Không thấy học viên cần tìm? Dọn giai đoạn còn sót (${stragglers.length} học viên đang có giai đoạn thực hành đã lưu)</summary>
+          <div class="card" style="background:#fffdf7;border:1px dashed #a8722a;margin-top:8px">
+            <p class="muted" style="margin-top:0">Đây là những học viên <b>đang có ít nhất 1 giai đoạn thực hành đã lưu</b> (do trước đó khoa từng xác nhận, hoặc dữ liệu test còn sót) nên không hiện ở Bước 1. Tick chọn rồi bấm "Xoá giai đoạn đã chọn" để đưa họ về lại trạng thái <b>chưa phân khoa</b> — sau đó họ sẽ tự xuất hiện lại ở Bước 1 bên dưới.</p>
+            <div class="row-flex" style="margin-bottom:6px">
+              <button type="button" class="ghost small-btn" id="bp-straggler-all">☑️ Chọn tất cả</button>
+              <button type="button" class="ghost small-btn" id="bp-straggler-none">◻️ Bỏ chọn hết</button>
+              <span class="muted" id="bp-straggler-count">0 học viên đã chọn</span>
+            </div>
+            <div style="max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:6px">
+              <table>
+                <thead><tr><th style="width:32px">STT</th><th style="width:32px"></th><th>Học viên</th><th>Chức danh</th><th>Số giai đoạn đã lưu</th><th>Tổng số tháng</th></tr></thead>
+                <tbody>${stragglers.map((t,i)=>{
+                  const soThang = (t.giaiDoan||[]).reduce((sum,s)=>sum+monthsDecimal(s.tuNgay,s.denNgay),0);
+                  return `<tr>
+                    <td style="text-align:center">${i+1}</td>
+                    <td style="text-align:center"><input type="checkbox" data-straggler-check="${t.id}"></td>
+                    <td>${t.hoTen||''}</td><td>${t.chucDanhDangKy||''}</td>
+                    <td style="text-align:center">${(t.giaiDoan||[]).length}</td>
+                    <td style="text-align:center">${soThang.toFixed(1)}</td>
+                  </tr>`;
+                }).join('')}</tbody>
+              </table>
+            </div>
+            <div class="row-flex" style="margin-top:10px">
+              <button type="button" id="bp-straggler-clear" style="background:#b3261e">🗑️ Xoá giai đoạn đã chọn (đưa về lại chưa phân khoa)</button>
+            </div>
+          </div>
+        </details>
+        ` : ''}
         <div class="card">
           <h3 style="font-size:14px">Bước 1 — Chọn nhóm học viên (cùng 1 đợt tiếp nhận)</h3>
           <div class="row-flex">
@@ -6196,9 +6274,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         const box = body.querySelector('#bp-candidates');
         box.innerHTML = filtered.length ? `
           <table style="font-size:13px">
-            <thead><tr><th style="width:34px"></th><th>Họ và tên</th><th style="width:100px">Mã hồ sơ</th><th style="width:130px">Đối tượng</th><th style="width:110px">Ngày tiếp nhận</th></tr></thead>
-            <tbody>${filtered.map(t=>`
+            <thead><tr><th style="width:32px">STT</th><th style="width:34px"></th><th>Họ và tên</th><th style="width:100px">Mã hồ sơ</th><th style="width:130px">Đối tượng</th><th style="width:110px">Ngày tiếp nhận</th></tr></thead>
+            <tbody>${filtered.map((t,i)=>`
               <tr>
+                <td style="text-align:center">${i+1}</td>
                 <td style="text-align:center"><input type="checkbox" data-bp-cb="${t.id}" ${selectedIds.has(t.id)?'checked':''} /></td>
                 <td>${t.hoTen||''}</td>
                 <td>${t.maHoSo||''}</td>
@@ -6221,6 +6300,35 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       body.querySelector('#bp-f-apply').onclick = refreshCandidates;
       refreshCandidates();
       body.querySelector('#bp-sel-count').textContent = selectedIds.size + ' học viên đã chọn';
+
+      // ----- Dọn giai đoạn còn sót (hàng loạt) -----
+      const straggCheck = () => Array.from(body.querySelectorAll('[data-straggler-check]'));
+      function capNhatSoDaChonStraggler(){
+        const n = straggCheck().filter(c=>c.checked).length;
+        const el = body.querySelector('#bp-straggler-count');
+        if (el) el.textContent = n + ' học viên đã chọn';
+      }
+      straggCheck().forEach(c=>{ c.onchange = capNhatSoDaChonStraggler; });
+      const btnStragAll = body.querySelector('#bp-straggler-all');
+      if (btnStragAll) btnStragAll.onclick = ()=>{ straggCheck().forEach(c=>c.checked=true); capNhatSoDaChonStraggler(); };
+      const btnStragNone = body.querySelector('#bp-straggler-none');
+      if (btnStragNone) btnStragNone.onclick = ()=>{ straggCheck().forEach(c=>c.checked=false); capNhatSoDaChonStraggler(); };
+      const btnStragClear = body.querySelector('#bp-straggler-clear');
+      if (btnStragClear) btnStragClear.onclick = async ()=>{
+        const ids = straggCheck().filter(c=>c.checked).map(c=>c.getAttribute('data-straggler-check'));
+        if (!ids.length){ alert('Chưa chọn học viên nào.'); return; }
+        if (!confirm('Xoá TOÀN BỘ giai đoạn thực hành đã lưu của ' + ids.length + ' học viên đã chọn?\n\nHọ sẽ quay về trạng thái "chưa phân khoa" hoàn toàn (như chưa từng được phân công), để có thể lập lại lộ trình mới ở Bước 1. Thao tác này không thể hoàn tác — chỉ dùng khi chắc chắn đây là dữ liệu test/nhập nhầm.')) return;
+        for (const id of ids){
+          const t = state.trainees.find(x=>x.id===id);
+          if (!t) continue;
+          t.giaiDoan = [];
+          t.deNghiPhanCongList = [];
+          recomputeTraineeOverallStatus(t);
+          await saveTrainee(t);
+        }
+        showToast('Đã xoá giai đoạn của ' + ids.length + ' học viên — quay lại danh sách để chọn lộ trình mới.');
+        renderStep1();
+      };
 
       // ----- lộ trình mẫu -----
       let tplRows = [{ khoaId:'', soThang:'' }];
@@ -6296,6 +6404,24 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         const validRows = tplRows.filter(r=>r.khoaId && parseFloat(r.soThang)>0);
         if (!validRows.length){ alert('Lộ trình luân khoa chưa hợp lệ — cần ít nhất 1 dòng đủ Khoa + số tháng.'); return; }
         const fallbackKhoaList = validRows.map(r=>({ khoaId:r.khoaId, khoaTen:(unitOptions.find(u=>u.id===r.khoaId)||{}).name||'', soThang:parseFloat(r.soThang) }));
+        // Nhóm 1 — Hồi sức cấp cứu có 7 khoa hợp lệ theo quy định (không bắt buộc luôn là đúng 2 khoa
+        // mặc định của mẫu chuẩn) — quay vòng để chia đều học viên qua nhiều khoa, tránh dồn hết vào
+        // 1-2 khoa cố định như trước.
+        const CAP_CUU_SEARCH_PHRASES = [
+          'khám bệnh cấp cứu', 'khám bệnh - cấp cứu',
+          'hồi sức tích cực - chống độc', 'hstc',
+          'gây mê hồi sức',
+          'hồi sức ngoại thần kinh cột sống',
+          'hồi sức cấp cứu - khoa nhi',
+          'hồi sức cấp cứu - khoa thần kinh đột quỵ', 'hồi sức cấp cứu - thần kinh đột quỵ',
+          'hồi sức cấp cứu - khoa truyền nhiễm', 'hồi sức cấp cứu - truyền nhiễm',
+        ];
+        const capCuuPool = [];
+        CAP_CUU_SEARCH_PHRASES.forEach(phrase=>{
+          const u = unitOptions.find(x=> (x.name||'').toLowerCase().includes(phrase) && !capCuuPool.some(p=>p.id===x.id));
+          if (u) capCuuPool.push(u);
+        });
+        const capCuuIdSet = new Set(fallbackKhoaList.filter(k=>capCuuPool.some(p=>p.id===k.khoaId)).map(k=>k.khoaId));
         const startDate = body.querySelector('#bp-startdate').value || todayISO();
         const stagger = body.querySelector('#bp-stagger').checked;
         const bySpecialty = body.querySelector('#bp-by-specialty').checked;
@@ -6329,6 +6455,17 @@ https://github.com/nodeca/pako/blob/main/LICENSE
               offsetOrder = null; // lộ trình riêng theo chuyên khoa — không dùng thứ tự cân tải chung
               if (spec.warnings.length) specialtyWarnings.push(t.hoTen+' ('+t.dinhHuongChuyenKhoa+'): '+spec.warnings.join(' '));
             }
+          }
+          // Quay vòng khoa trong nhóm Hồi sức cấp cứu (nếu mẫu đang chọn có dùng dòng nào thuộc nhóm này)
+          // để chia đều học viên qua nhiều khoa trong 7 khoa hợp lệ, không dồn hết vào 1-2 khoa cố định.
+          if (capCuuPool.length > 1){
+            let capCuuSlot = 0;
+            khoaList = khoaList.map(k=>{
+              if (!capCuuIdSet.has(k.khoaId)) return k;
+              const picked = capCuuPool[(i + capCuuSlot) % capCuuPool.length];
+              capCuuSlot++;
+              return { khoaId: picked.id, khoaTen: picked.name, soThang: k.soThang };
+            });
           }
           const offset = stagger ? (offsetOrder ? offsetOrder[i % offsetOrder.length] : (i % khoaList.length)) : 0;
           const seq = khoaList.slice(offset).concat(khoaList.slice(0, offset));
@@ -6366,7 +6503,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       body.innerHTML = `
         <div class="card" style="background:#eefaf0">
           <h3 style="font-size:14px">📝 Dự thảo phân bổ — ${draft.length} học viên</h3>
-          <p class="muted" style="margin-top:-6px">Kiểm tra lại từng người — bỏ tick những ai CHƯA muốn áp dụng đợt này (vẫn tạo được sau, không mất dữ liệu). Bấm "✏️ Sửa" ở từng người để đổi khoa/số tháng/thêm-bớt dòng ngay tại đây trước khi áp dụng chính thức.</p>
+          <p class="muted" style="margin-top:-6px">Kiểm tra lại từng người — bỏ tick những ai CHƯA muốn áp dụng đợt này (vẫn tạo được sau, không mất dữ liệu). Bấm "✏️ Sửa" ở từng người để đổi khoa/số tháng/ngày bắt đầu/thêm-bớt dòng ngay tại đây trước khi áp dụng chính thức. Đổi "Từ ngày" ở dòng đầu tiên sẽ tự tính lại ngày của các dòng phía sau theo đúng thứ tự. Riêng khoa thuộc <b>Nhóm 1 — Hồi sức cấp cứu</b> (Khám bệnh-Cấp cứu, HSTC-CĐ, Gây mê Hồi sức...) đã được <b>tự động quay vòng chia đều</b> qua nhiều khoa hợp lệ trong nhóm, không dồn hết vào 1-2 khoa cố định.</p>
         </div>
         ${specialtyWarnings.length ? `<div class="card" style="background:#fbf0dc"><p style="color:#7A5A00;font-size:12.5px;margin:0">⚠ Một số học viên có dòng chưa tự khớp được tên khoa theo định hướng chuyên khoa — kiểm tra lại dòng trống trong bảng bên dưới rồi tự chọn/sửa tay ở "Phân khoa" sau khi áp dụng:<br>${specialtyWarnings.join('<br>')}</p></div>` : ''}
         <div style="max-height:55vh;overflow:auto">
@@ -6391,7 +6528,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
                   return `<tr>
                     <td style="text-align:center">${label}</td>
                     <td><select data-edit-khoa="${i}-${j}">${unitOptions.map(u=>`<option value="${u.id}" ${u.id===r.khoaId?'selected':''}>${u.name}</option>`).join('')}</select></td>
-                    <td style="text-align:center">${fmtDate(r.tuNgay)}</td>
+                    <td style="text-align:center">${j===0 ? `<input type="date" data-edit-tungay="${i}" value="${r.tuNgay||''}" style="width:130px">` : fmtDate(r.tuNgay)}</td>
                     <td style="text-align:center">${fmtDate(r.denNgay)}</td>
                     <td><input type="number" step="0.5" min="0.5" data-edit-thang="${i}-${j}" value="${r.soThang}" style="width:70px" /></td>
                     <td><button type="button" class="ghost small-btn" data-edit-delrow="${i}-${j}">🗑️</button></td>
@@ -6417,6 +6554,15 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         b.onclick = ()=>{
           const i = +b.getAttribute('data-draft-edit');
           if (editingSet.has(i)) editingSet.delete(i); else editingSet.add(i);
+          renderStep2(specialtyWarnings);
+        };
+      });
+      body.querySelectorAll('[data-edit-tungay]').forEach(inp=>{
+        inp.onchange = ()=>{
+          const i = +inp.getAttribute('data-edit-tungay');
+          if (!inp.value) return;
+          draft[i].rows[0].tuNgay = inp.value;
+          recalcDatesForDraftStudent(draft[i]);
           renderStep2(specialtyWarnings);
         };
       });
@@ -6579,6 +6725,14 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           </table>`}
         ` : ''}
       </div>
+      <div class="card" style="background:#fffdf7;border:1px dashed #a8722a">
+        <h3>📨 Link TỔNG — dùng khi gửi công văn cho nhiều khoa cùng lúc</h3>
+        <p class="muted" style="margin-top:-6px">Thay vì liệt kê hàng chục link riêng (mỗi khoa 1 link) trong công văn — rất rườm rà — anh chỉ cần đưa <b>đúng 1 link duy nhất</b> này vào công văn gửi chung cho toàn viện. Mỗi khoa mở link, tự chọn đúng tên khoa mình trong danh sách, hệ thống sẽ tự điều hướng vào đúng trang phân công của khoa đó (giống hệt như link riêng, chỉ khác là dùng chung 1 link để gửi).</p>
+        <div class="row-flex">
+          <button type="button" id="copy-link-tong">📨 Copy Link TỔNG (gửi công văn)</button>
+        </div>
+        <p class="muted" style="margin-top:6px;font-size:12px">⚠️ Lưu ý: link này để lộ danh sách tên tất cả các khoa/phòng (không lộ dữ liệu học viên) cho bất kỳ ai mở được link — chỉ nên đưa vào công văn nội bộ gửi đúng các khoa liên quan, không đăng công khai.</p>
+      </div>
       <div class="card">
         <h3>🔗 Link phân công theo khoa (gộp mọi học viên đang chờ của cùng 1 khoa)</h3>
         <p class="muted" style="margin-top:-6px">Mỗi khoa chỉ cần <b>1 link duy nhất</b> — Trưởng khoa mở ra sẽ thấy đủ TẤT CẢ học viên đang chờ khoa mình phân công (không phải 1 link/học viên như trước). Khoảng "Từ ngày – đến ngày" dưới đây là gộp từ ngày sớm nhất đến ngày muộn nhất trong số các học viên đang chờ của khoa.</p>
@@ -6655,6 +6809,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         onSelect: (id)=>{ tcKhoaChonId = id || ''; },
       }
     );
+    const btnCopyLinkTong = content.querySelector('#copy-link-tong');
+    if (btnCopyLinkTong) btnCopyLinkTong.onclick = async ()=>{
+      const url = window.location.origin + window.location.pathname + '?role=chonkhoa';
+      try { await navigator.clipboard.writeText(url); showToast('Đã copy Link TỔNG — dán vào công văn gửi chung cho các khoa.'); }
+      catch(e){ prompt('Copy link TỔNG dưới đây để dán vào công văn:', url); }
+    };
     content.querySelector('#tc-loc').onclick = ()=>{
       state.traCuuKhoa = {
         khoaId: tcKhoaChonId,
@@ -6674,6 +6834,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         '<tr><td style="text-align:center">'+(i+1)+'</td><td>'+(t.hoTen||'')+'</td>' +
         (tc.khoaId ? '' : '<td>'+(r.khoaTen||'')+'</td>') +
         '<td style="text-align:center">'+fmtDate(r.tuNgay)+' – '+fmtDate(r.denNgay)+'</td>' +
+        '<td style="text-align:center">'+monthsDecimal(r.tuNgay,r.denNgay).toFixed(1)+'</td>' +
         '<td>'+(r.nguoiHuongDan||'')+'</td>' +
         '<td style="text-align:center">'+(r.trangThai==='Đã phân công'?'Đã phân công':'Chờ phân công')+'</td></tr>'
       ).join('');
@@ -6690,14 +6851,14 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       const tieuDe = 'DANH SÁCH HỌC VIÊN' + (tenKhoaDangLoc ? ' TẠI ' + tenKhoaDangLoc.toUpperCase() : ' TOÀN VIỆN') +
         ((tc.from||tc.to) ? ' (TỪ ' + (tc.from?fmtDate(tc.from):'…') + ' ĐẾN ' + (tc.to?fmtDate(tc.to):'…') + ')' : '');
       const bodyHtml =
-        '<table class="kv" style="table-layout:fixed"><colgroup><col style="width:42%"><col style="width:58%"></colgroup><tr>' +
-          '<td style="width:42%;vertical-align:middle" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:11pt;white-space:nowrap" nowrap="nowrap">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br>PHÒNG CHỈ ĐẠO TUYẾN</div></td>' +
-          '<td style="width:58%;vertical-align:middle" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:12.5pt" nowrap="nowrap">' + tieuDe + '</div></td>' +
+        '<table class="kv" style="table-layout:fixed;border-bottom:1.5pt solid #1E4D3B;padding-bottom:8pt;margin-bottom:14pt"><colgroup><col style="width:40%"><col style="width:60%"></colgroup><tr>' +
+          '<td style="width:40%;vertical-align:middle;padding:6pt 14pt 6pt 0" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:11pt;line-height:1.4" nowrap="nowrap">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br>PHÒNG CHỈ ĐẠO TUYẾN</div></td>' +
+          '<td style="width:60%;vertical-align:middle;padding:6pt 0 6pt 14pt;border-left:1pt solid #ccc" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:13pt;line-height:1.4">' + tieuDe + '</div></td>' +
         '</tr></table>' +
-        '<p style="margin-top:14px">Tổng số học viên: <b>'+traCuuKetQua.length+'</b></p>' +
-        '<table class="data"><thead><tr><th style="width:5%">STT</th><th style="width:'+(tc.khoaId?'25%':'20%')+'">Học viên</th>' +
-        (tc.khoaId ? '' : '<th style="width:18%">Khoa</th>') +
-        '<th style="width:20%">Thời gian</th><th style="width:'+(tc.khoaId?'25%':'20%')+'">Người hướng dẫn</th><th style="width:15%">Trạng thái</th></tr></thead>' +
+        '<p style="margin-top:2pt">Tổng số học viên: <b>'+traCuuKetQua.length+'</b></p>' +
+        '<table class="data"><thead><tr><th style="width:5%">STT</th><th style="width:'+(tc.khoaId?'20%':'17%')+'">Học viên</th>' +
+        (tc.khoaId ? '' : '<th style="width:15%">Khoa</th>') +
+        '<th style="width:18%">Thời gian</th><th style="width:9%">Số tháng</th><th style="width:'+(tc.khoaId?'22%':'19%')+'">Người hướng dẫn</th><th style="width:13%">Trạng thái</th></tr></thead>' +
         '<tbody>'+rowsHtml+'</tbody></table>' +
         '<table class="sign-block"><tr><td style="width:50%">&nbsp;</td><td style="width:50%">Gia Lai, ngày ..... tháng ..... năm '+new Date().getFullYear()+'<br>' + (tenKhoaDangLoc ? 'TRƯỞNG KHOA' : 'TRƯỞNG PHÒNG CHỈ ĐẠO TUYẾN') + '<br><span class="sign-note">(Ký, ghi rõ họ tên)</span><br>' +
           (anhKyPhoBien
@@ -6754,13 +6915,19 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     if (btnChoBatchDel) btnChoBatchDel.onclick = async ()=>{
       const selected = choChecks().filter(c=>c.checked).map(c=>c.getAttribute('data-cho-check'));
       if (!selected.length){ alert('Chưa chọn mục nào để xoá.'); return; }
-      if (!confirm('Xoá hẳn ' + selected.length + ' đề nghị phân công đang chờ đã chọn?\n\nCác mục này sẽ biến mất khỏi danh sách chờ của khoa. Có thể gửi lại đề nghị mới sau nếu cần. Thao tác này KHÔNG áp dụng cho các mục đã "Đã phân công" (đã ký).')) return;
+      if (!confirm('Xoá hẳn ' + selected.length + ' đề nghị phân công đang chờ đã chọn?\n\nCác mục này sẽ biến mất khỏi danh sách chờ của khoa (và giai đoạn thực hành liên quan nếu có). Có thể gửi lại đề nghị mới sau nếu cần. Thao tác này KHÔNG áp dụng cho các mục đã "Đã phân công" (đã ký).')) return;
       const traineesToSave = new Map();
       selected.forEach(key=>{
         const [traineeId, reqId] = key.split('::');
         const t = visibleTrainees().find(x=>x.id===traineeId);
         if (!t) return;
+        const r = (t.deNghiPhanCongList||[]).find(x=>x.id===reqId);
         t.deNghiPhanCongList = (t.deNghiPhanCongList||[]).filter(x=>x.id!==reqId);
+        // Dọn luôn giai đoạn thực hành trùng khoa + thời gian (nếu lỡ đã có, tránh mồ côi dữ liệu
+        // khiến học viên không quay lại được Bước 1 của "Lập kế hoạch phân bổ hàng loạt").
+        if (r && t.giaiDoan && t.giaiDoan.length){
+          t.giaiDoan = t.giaiDoan.filter(gd => !(gd.khoaId===r.khoaId && gd.tuNgay===r.tuNgay && gd.denNgay===r.denNgay));
+        }
         traineesToSave.set(t.id, t);
       });
       for (const t of traineesToSave.values()){ await saveTrainee(t); }
@@ -6784,7 +6951,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     if (btnBatchReopen) btnBatchReopen.onclick = async ()=>{
       const selected = doneChecks().filter(c=>c.checked).map(c=>c.getAttribute('data-done-check'));
       if (!selected.length){ alert('Chưa chọn mục nào để mở lại.'); return; }
-      if (!confirm('Mở lại ' + selected.length + ' mục đã chọn?\n\nCác hồ sơ sẽ quay về trạng thái "Chờ phân công", khoa dùng lại đúng link cũ để chọn/ký lại. Nếu Quyết định/Phụ lục đã trình ký Giám đốc dựa trên dữ liệu cũ, cần rà soát lại các văn bản đó sau khi mở lại.')) return;
+      if (!confirm('Mở lại ' + selected.length + ' mục đã chọn?\n\nCác hồ sơ sẽ quay về trạng thái "Chờ phân công" (đồng thời xoá giai đoạn thực hành đã tạo khi xác nhận trước đó), khoa dùng lại đúng link cũ để chọn/ký lại. Nếu Quyết định/Phụ lục đã trình ký Giám đốc dựa trên dữ liệu cũ, cần rà soát lại các văn bản đó sau khi mở lại.')) return;
       const traineesToSave = new Map();
       selected.forEach(key=>{
         const [traineeId, reqId] = key.split('::');
@@ -6792,10 +6959,19 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         if (!t) return;
         const r = (t.deNghiPhanCongList||[]).find(x=>x.id===reqId);
         if (!r) return;
+        // Xoá giai đoạn thực hành đã được tạo khi trước đó bấm "Xác nhận" cho đúng khoa + thời gian này,
+        // để tránh dữ liệu mồ côi (giai đoạn còn sót dù đề nghị đã quay về "Chờ phân công").
+        if (t.giaiDoan && t.giaiDoan.length){
+          t.giaiDoan = t.giaiDoan.filter(gd => !(gd.khoaId===r.khoaId && gd.tuNgay===r.tuNgay && gd.denNgay===r.denNgay));
+        }
         r.trangThai = 'Chờ phân công';
+        r.chuKyImage = '';
+        r.fileDataUrl = '';
+        r.nguoiKy = '';
+        r.ngayKy = '';
         traineesToSave.set(t.id, t);
       });
-      for (const t of traineesToSave.values()){ await saveTrainee(t); }
+      for (const t of traineesToSave.values()){ recomputeTraineeOverallStatus(t); await saveTrainee(t); }
       showToast('Đã mở lại ' + selected.length + ' mục — quay về trạng thái "Chờ phân công".');
       renderTraineeByKhoaView(content);
     };
@@ -10115,6 +10291,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         }
         // Xoá tham số khỏi thanh địa chỉ sau khi dùng, tránh lộ mã PIN khi share/lưu lại link.
         window.history.replaceState({}, '', window.location.pathname);
+      }
+      // Link TỔNG (1 link duy nhất gửi công văn cho toàn viện, ?role=chonkhoa) — mở cổng công khai để
+      // từng khoa tự chọn đúng tên khoa mình, hệ thống tự điều hướng vào đúng trang phân công của khoa đó,
+      // khỏi phải gửi hàng chục link riêng lẻ (mỗi khoa 1 link) trong cùng 1 công văn.
+      if (qs.get('role') === 'chonkhoa'){
+        state._chonKhoaGateway = true;
       }
       // Link/QR dán ở phòng CĐT cho học viên MỚI (?role=trainee) — mở thẳng vào form
       // "Đăng ký hồ sơ mới", khỏi phải tự chọn vai trò rồi tìm nút đăng ký.
