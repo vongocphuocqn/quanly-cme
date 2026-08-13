@@ -1487,7 +1487,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           <tbody>
           ${rows.map((r,i)=>{
             const laKhoaNay = r.khoaId === currentKhoaId;
-            const trongThang = monthsDecimal(r.tuNgay, r.denNgay);
+            const trongThang = (r.soThang!=null && r.soThang!=='') ? parseFloat(r.soThang) : monthsDecimal(r.tuNgay, r.denNgay);
             const oHD = laKhoaNay
               ? (r.nguoiHuongDan ? `<b style="color:var(--amber)">${r.nguoiHuongDan}</b>` : `<span style="color:var(--red);font-style:italic">(khoa mình — chưa phân)</span>`)
               : (r.nguoiHuongDan ? r.nguoiHuongDan : '<span class="muted">—</span>');
@@ -1667,7 +1667,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             <button type="button" class="secondary" id="dnpc-xuat-tonghop-word">🖨️ In / Xuất Word bảng tổng hợp</button>
           </div>
           <table><thead><tr><th>Học viên</th><th>Thời gian</th><th>Số tháng</th><th>Người hướng dẫn</th><th>Chữ ký</th><th>Đính kèm</th></tr></thead>
-          <tbody>${xong.map(({t,r})=>`<tr><td>${t.hoTen}</td><td>${fmtDateRange(r.tuNgay,r.denNgay)}</td><td style="text-align:center">${monthsDecimal(r.tuNgay,r.denNgay).toFixed(1)}</td><td>${r.nguoiHuongDan}</td><td style="text-align:center">${reqChuKyCellHtml(r)}</td><td style="text-align:center">${reqAttachCellHtml(r)}</td></tr>`).join('')}</tbody></table>
+          <tbody>${xong.map(({t,r})=>`<tr><td>${t.hoTen}</td><td>${fmtDateRange(r.tuNgay,r.denNgay)}</td><td style="text-align:center">${((r.soThang!=null && r.soThang!=='') ? parseFloat(r.soThang) : monthsDecimal(r.tuNgay,r.denNgay)).toFixed(1)}</td><td>${r.nguoiHuongDan}</td><td style="text-align:center">${reqChuKyCellHtml(r)}</td><td style="text-align:center">${reqAttachCellHtml(r)}</td></tr>`).join('')}</tbody></table>
           ${(()=>{
             const tenPho = {};
             xong.forEach(({r})=>{ if (r.nguoiKy) tenPho[r.nguoiKy] = (tenPho[r.nguoiKy]||0) + 1; });
@@ -1690,17 +1690,18 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     bindReqSignAttachViewers(content, (reqId)=> pendingItems.find(x=>x.r.id===reqId));
 
     const btnXuatTongHopWord = content.querySelector('#dnpc-xuat-tonghop-word');
-    if (btnXuatTongHopWord) btnXuatTongHopWord.onclick = ()=>{
+    if (btnXuatTongHopWord) btnXuatTongHopWord.onclick = async ()=>{
       const rowsHtml = xong.map(({t,r},i)=>
         '<tr><td style="text-align:center">'+(i+1)+'</td><td>'+(t.hoTen||'')+'</td>' +
         '<td style="text-align:center">'+fmtDate(r.tuNgay)+' – '+fmtDate(r.denNgay)+'</td>' +
-        '<td style="text-align:center">'+monthsDecimal(r.tuNgay,r.denNgay).toFixed(1)+'</td>' +
+        '<td style="text-align:center">'+((r.soThang!=null && r.soThang!=='') ? parseFloat(r.soThang) : monthsDecimal(r.tuNgay,r.denNgay)).toFixed(1)+'</td>' +
         '<td>'+(r.nguoiHuongDan||'')+'</td><td></td></tr>'
       ).join('');
       const tenPho = {};
       xong.forEach(({r})=>{ if (r.nguoiKy) tenPho[r.nguoiKy] = (tenPho[r.nguoiKy]||0) + 1; });
       const tenPhoBienNhat = Object.keys(tenPho).sort((a,b)=>tenPho[b]-tenPho[a])[0] || state.dnpcTenKyChung || '';
       const anhKy = state.lastSignatureDataUrl || ((xong.find(x=>x.r.chuKyImage)||{}).r||{}).chuKyImage || '';
+      const sig = await resizeSignatureForWord(anhKy, 110);
       const bodyHtml =
         '<table class="kv" style="table-layout:fixed"><colgroup><col style="width:42%"><col style="width:58%"></colgroup><tr>' +
           '<td style="width:42%;vertical-align:middle" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:11pt;white-space:nowrap" nowrap="nowrap">BỆNH VIỆN ĐA KHOA TRUNG TÂM<br>' + (state.unitName||'').toUpperCase() + '</div></td>' +
@@ -1711,9 +1712,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         '<table class="data"><thead><tr><th style="width:6%">STT</th><th style="width:24%">Học viên</th><th style="width:20%">Thời gian thực hành</th><th style="width:10%">Số tháng</th><th style="width:22%">Người hướng dẫn</th><th style="width:18%">Ghi chú</th></tr></thead>' +
         '<tbody>'+rowsHtml+'</tbody></table>' +
         '<table class="sign-block"><tr><td style="width:50%">&nbsp;</td><td style="width:50%">Gia Lai, ngày ..... tháng ..... năm '+new Date().getFullYear()+'<br>TRƯỞNG KHOA<br><span class="sign-note">(Ký, ghi rõ họ tên)</span><br>' +
-          (anhKy
-            ? '<img src="'+anhKy+'" width="110" height="48" style="width:110px;height:48px;mso-width-source:userset;mso-height-source:userset;display:block;margin:0 auto" alt="Chữ ký" />'
-            : '<br><br><br><br>') +
+          chuKyImgHtmlForWord(sig) +
           (tenPhoBienNhat ? '<div style="font-weight:bold">'+tenPhoBienNhat+'</div>' : '') +
         '</td></tr></table>';
       exportWordCustomDoc('BẢNG TỔNG HỢP PHÂN CÔNG HƯỚNG DẪN', bodyHtml, 'bang_tong_hop_phan_cong_'+(state.unitName||'khoa').replace(/\s+/g,'_')+'_'+todayISO()+'.doc', { landscape:false });
@@ -4670,6 +4669,31 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       img.src = dataUrl;
     });
   }
+  // Giống resizeSignatureDataUrl nhưng trả về CẢ kích thước thực tế (width/height) của ảnh sau khi
+  // vẽ lại — để khai báo đúng khớp trong thẻ <img width height> khi nhúng vào Word. Word (một số máy/
+  // phiên bản) hiển thị "The linked image cannot be displayed" nếu width/height khai báo trong HTML
+  // không khớp đúng kích thước pixel thật của ảnh — nên luôn phải lấy số đo THẬT sau khi resize,
+  // không được khai báo cứng một con số cố định như trước.
+  function resizeSignatureForWord(dataUrl, targetWidth){
+    return new Promise((resolve)=>{
+      if (!dataUrl){ resolve(null); return; }
+      const img = new Image();
+      img.onload = function(){
+        const w = targetWidth || 110;
+        const h = Math.max(1, Math.round(w * img.height / img.width));
+        const c = document.createElement('canvas');
+        c.width = w; c.height = h;
+        c.getContext('2d').drawImage(img, 0, 0, w, h);
+        resolve({ dataUrl: c.toDataURL('image/png'), width: w, height: h });
+      };
+      img.onerror = function(){ resolve(null); };
+      img.src = dataUrl;
+    });
+  }
+  function chuKyImgHtmlForWord(sig){
+    if (!sig) return '<br><br><br><br>';
+    return '<img src="'+sig.dataUrl+'" width="'+sig.width+'" height="'+sig.height+'" style="width:'+sig.width+'px;height:'+sig.height+'px;mso-width-source:userset;mso-height-source:userset;display:block;margin:0 auto" alt="Chữ ký" />';
+  }
   function quocHieuBlockHtml(){
     return '<div style="text-align:center;font-weight:bold">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>' +
       '<div style="text-align:center;font-weight:bold;text-decoration:underline">Độc lập - Tự do - Hạnh phúc</div>' +
@@ -6828,13 +6852,13 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       renderTraineeByKhoaView(content);
     };
     const btnTcExportWord = content.querySelector('#tc-export-word');
-    if (btnTcExportWord) btnTcExportWord.onclick = ()=>{
+    if (btnTcExportWord) btnTcExportWord.onclick = async ()=>{
       const tenKhoaDangLoc = tc.khoaId ? (state.config.units.find(u=>u.id===tc.khoaId)||{}).name || '' : '';
       const rowsHtml = traCuuKetQua.map(({t,r},i)=>
         '<tr><td style="text-align:center">'+(i+1)+'</td><td>'+(t.hoTen||'')+'</td>' +
         (tc.khoaId ? '' : '<td>'+(r.khoaTen||'')+'</td>') +
         '<td style="text-align:center">'+fmtDate(r.tuNgay)+' – '+fmtDate(r.denNgay)+'</td>' +
-        '<td style="text-align:center">'+monthsDecimal(r.tuNgay,r.denNgay).toFixed(1)+'</td>' +
+        '<td style="text-align:center">'+((r.soThang!=null && r.soThang!=='') ? parseFloat(r.soThang) : monthsDecimal(r.tuNgay,r.denNgay)).toFixed(1)+'</td>' +
         '<td>'+(r.nguoiHuongDan||'')+'</td>' +
         '<td style="text-align:center">'+(r.trangThai==='Đã phân công'?'Đã phân công':'Chờ phân công')+'</td></tr>'
       ).join('');
@@ -6848,6 +6872,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       });
       const tenPhoBienNhat = Object.keys(tenPho).sort((a,b)=>tenPho[b]-tenPho[a])[0] || '';
       const anhKyPhoBien = Object.keys(kyPho).sort((a,b)=>kyPho[b]-kyPho[a])[0] || '';
+      const sig = await resizeSignatureForWord(anhKyPhoBien, 110);
       const tieuDe = 'DANH SÁCH HỌC VIÊN' + (tenKhoaDangLoc ? ' TẠI ' + tenKhoaDangLoc.toUpperCase() : ' TOÀN VIỆN') +
         ((tc.from||tc.to) ? ' (TỪ ' + (tc.from?fmtDate(tc.from):'…') + ' ĐẾN ' + (tc.to?fmtDate(tc.to):'…') + ')' : '');
       const bodyHtml =
@@ -6861,9 +6886,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         '<th style="width:18%">Thời gian</th><th style="width:9%">Số tháng</th><th style="width:'+(tc.khoaId?'22%':'19%')+'">Người hướng dẫn</th><th style="width:13%">Trạng thái</th></tr></thead>' +
         '<tbody>'+rowsHtml+'</tbody></table>' +
         '<table class="sign-block"><tr><td style="width:50%">&nbsp;</td><td style="width:50%">Gia Lai, ngày ..... tháng ..... năm '+new Date().getFullYear()+'<br>' + (tenKhoaDangLoc ? 'TRƯỞNG KHOA' : 'TRƯỞNG PHÒNG CHỈ ĐẠO TUYẾN') + '<br><span class="sign-note">(Ký, ghi rõ họ tên)</span><br>' +
-          (anhKyPhoBien
-            ? '<img src="'+anhKyPhoBien+'" width="110" height="48" style="width:110px;height:48px;mso-width-source:userset;mso-height-source:userset;display:block;margin:0 auto" alt="Chữ ký" />'
-            : '<br><br><br><br>') +
+          chuKyImgHtmlForWord(sig) +
           (tenPhoBienNhat ? '<div style="font-weight:bold">'+tenPhoBienNhat+'</div>' : '') +
         '</td></tr></table>' +
         (!anhKyPhoBien ? '<p class="muted" style="text-align:right;font-size:10.5pt;font-style:italic;margin-top:2px">(Danh sách có học viên chưa ký — cần khoa ký bổ sung trước khi lưu hồ sơ chính thức)</p>' : '');
