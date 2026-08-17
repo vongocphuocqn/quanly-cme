@@ -629,49 +629,55 @@ https://github.com/nodeca/pako/blob/main/LICENSE
   }
 
   async function loadAll(){
-    try {
-      const cfg = await window.storage.get('system_config', true);
-      state.config = cfg ? JSON.parse(cfg.value) : { adminPin: "0000", units: [] };
-    } catch(e){ state.config = { adminPin: "0000", units: [] }; }
+    // Tải dữ liệu SONG SONG (Promise.all) thay vì tuần tự từng cái một — trước đây mỗi dòng
+    // "await window.storage.get(...)" phải đợi xong dòng trước mới chạy dòng sau, nên có bao
+    // nhiêu key là cộng dồn bấy nhiêu lần độ trễ mạng, làm màn "Đang khởi tạo hệ thống…" load
+    // rất chậm. Các key này không phụ thuộc lẫn nhau nên gọi cùng lúc, đợi tất cả xong 1 lần.
+    async function fetchJSON(key, fallback){
+      try {
+        const r = await window.storage.get(key, true);
+        return (r && r.value) ? JSON.parse(r.value) : fallback;
+      } catch(e){ return fallback; }
+    }
+    const [
+      cfg, employeesRaw, pending, approvedLog, rejectedLog, rejectedEmployeesLog,
+      customTemplates, docChecklist, phieuTiepNhanSeq, hiddenBuiltinMau, adminUsers, trainees
+    ] = await Promise.all([
+      fetchJSON('system_config', { adminPin: "0000", units: [] }),
+      fetchJSON('employees', []),
+      fetchJSON('pending_activities', []),
+      fetchJSON('approved_log', []),
+      fetchJSON('rejected_log', []),
+      fetchJSON('rejected_employees_log', []),
+      fetchJSON('custom_templates', []),
+      fetchJSON('doc_checklist_config', null),
+      fetchJSON('phieu_tiep_nhan_seq', 0),
+      fetchJSON('hidden_builtin_mau', []),
+      fetchJSON('admin_users', []),
+      (async ()=>{ try { return await loadAllTraineesSplit(); } catch(e){ return []; } })(),
+    ]);
+    state.config = cfg;
     ensureDanhMuc();
-    try {
-      const emp = await window.storage.get('employees', true);
-      state.employees = emp ? JSON.parse(emp.value) : [];
-      // Migration: bổ sung chucVuHR, trinhDoCM, trinhDo, ngachBac từ SEED_DATA
-      // (các bản lưu cũ không có các trường này)
-      state.employees = state.employees.map(e => {
-        const seed = SEED_DATA.find(s => s.soCCHN === e.soCCHN);
-        if (seed) {
-          return {
-            ...e,
-            chucVuHR: seed.chucVuHR || e.chucVuHR || '',
-            trinhDoCM: seed.trinhDoCM || e.trinhDoCM || '',
-            trinhDo: seed.trinhDo || e.trinhDo || '',
-            ngachBac: seed.ngachBac || e.ngachBac || ''
-          };
-        }
-        return e;
-      });
-    } catch(e){ state.employees = []; }
-    try {
-      const pend = await window.storage.get('pending_activities', true);
-      state.pending = pend ? JSON.parse(pend.value) : [];
-    } catch(e){ state.pending = []; }
-    try {
-      const ap = await window.storage.get('approved_log', true);
-      state.approvedLog = ap ? JSON.parse(ap.value) : [];
-    } catch(e){ state.approvedLog = []; }
-    try {
-      const rj = await window.storage.get('rejected_log', true);
-      state.rejectedLog = rj ? JSON.parse(rj.value) : [];
-    } catch(e){ state.rejectedLog = []; }
-    try {
-      const rje = await window.storage.get('rejected_employees_log', true);
-      state.rejectedEmployeesLog = rje ? JSON.parse(rje.value) : [];
-    } catch(e){ state.rejectedEmployeesLog = []; }
-    try {
-      state.trainees = await loadAllTraineesSplit();
-    } catch(e){ state.trainees = []; }
+    // Migration: bổ sung chucVuHR, trinhDoCM, trinhDo, ngachBac từ SEED_DATA
+    // (các bản lưu cũ không có các trường này)
+    state.employees = employeesRaw.map(e => {
+      const seed = SEED_DATA.find(s => s.soCCHN === e.soCCHN);
+      if (seed) {
+        return {
+          ...e,
+          chucVuHR: seed.chucVuHR || e.chucVuHR || '',
+          trinhDoCM: seed.trinhDoCM || e.trinhDoCM || '',
+          trinhDo: seed.trinhDo || e.trinhDo || '',
+          ngachBac: seed.ngachBac || e.ngachBac || ''
+        };
+      }
+      return e;
+    });
+    state.pending = pending;
+    state.approvedLog = approvedLog;
+    state.rejectedLog = rejectedLog;
+    state.rejectedEmployeesLog = rejectedEmployeesLog;
+    state.trainees = trainees;
     // Migration: cấp Mã hồ sơ cho các học viên đã có từ trước (chưa từng có maHoSo)
     let _hsChanged = false;
     (state.trainees||[]).forEach(t=>{
@@ -679,30 +685,15 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       if (t.daNopHoSo === undefined) t.daNopHoSo = true; // hồ sơ cũ coi như đã nộp/đã đầy đủ theo quy trình cũ
     });
     if (_hsChanged){ try { await saveTrainees(); } catch(e){} }
-    try {
-      const ct = await window.storage.get('custom_templates', true);
-      state.customTemplates = ct ? JSON.parse(ct.value) : [];
-    } catch(e){ state.customTemplates = []; }
-    try {
-      const dc = await window.storage.get('doc_checklist_config', true);
-      state.docChecklist = dc ? JSON.parse(dc.value) : null;
-    } catch(e){ state.docChecklist = null; }
+    state.customTemplates = customTemplates;
+    state.docChecklist = docChecklist;
     if (!state.docChecklist || !state.docChecklist.length){
       state.docChecklist = DOC_CHECKLIST_HV.map(d=>({...d}));
       try { await saveDocChecklist(); } catch(e){}
     }
-    try {
-      const pts = await window.storage.get('phieu_tiep_nhan_seq', true);
-      state.phieuTiepNhanSeq = pts ? (JSON.parse(pts.value)||0) : 0;
-    } catch(e){ state.phieuTiepNhanSeq = 0; }
-    try {
-      const hbm = await window.storage.get('hidden_builtin_mau', true);
-      state.hiddenBuiltinMau = hbm ? JSON.parse(hbm.value) : [];
-    } catch(e){ state.hiddenBuiltinMau = []; }
-    try {
-      const au = await window.storage.get('admin_users', true);
-      state.adminUsers = au ? JSON.parse(au.value) : [];
-    } catch(e){ state.adminUsers = []; }
+    state.phieuTiepNhanSeq = phieuTiepNhanSeq;
+    state.hiddenBuiltinMau = hiddenBuiltinMau;
+    state.adminUsers = adminUsers;
     // Đảm bảo đủ 5 tài khoản cho 5 nhân viên thuộc "Phòng Chỉ đạo tuyến" trong hệ thống — tự động bổ sung
     // người còn THIẾU mỗi lần mở app (không đụng/không trùng với tài khoản đã có sẵn của anh).
     const CDT_STAFF_DEFAULT = [
@@ -1409,26 +1400,20 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       { key:'ghinhan', label:'📝 Ghi nhận CNKT' },
       { key:'doipin', label:'🔑 Đổi mật khẩu' },
     ];
-    // Mở qua link phân công từ CĐT → chỉ hiện chức năng liên quan trực tiếp:
-    // Đề nghị phân công (chính) + Nhân viên của khoa (cần cho Bước 1: đánh dấu đủ điều kiện hướng dẫn).
+    // Mở qua link phân công từ CĐT (hoặc qua "link tổng" ?role=chonkhoa) → giao diện RÚT GỌN TỐI ĐA:
+    // CHỈ hiện đúng 1 màn "Đề nghị phân công hướng dẫn", không có tab nào khác, không có lối thoát ra
+    // menu đầy đủ — tránh Trưởng khoa/Điều dưỡng trưởng bị rối vì quá nhiều lựa chọn. Việc đánh dấu
+    // nhân viên "Đủ điều kiện hướng dẫn" vẫn làm được ngay trong màn này qua nút/dòng cảnh báo bên dưới
+    // (mở hộp thoại nhỏ), khỏi cần sang tab riêng. Các tab còn lại (Nhân viên của khoa, Ghi nhận CNKT,
+    // Đổi mật khẩu) chỉ hiện khi Phòng CĐT/Admin xem hệ thống dưới góc độ khoa/phòng (qua đăng nhập
+    // admin/impersonate), không hiện cho khoa tự truy cập qua link.
     const focus = !!state.unitLinkFocus;
     const tabs = focus
-      ? [ allTabs.find(x=>x.key==='phancong'), allTabs.find(x=>x.key==='nhanvien') ]
+      ? [ allTabs.find(x=>x.key==='phancong') ]
       : allTabs;
-    if (focus && !tabs.some(x=>x.key===state.tab)) state.tab = 'phancong';
-    const focusBannerHtml = focus
-      ? `<div style="background:#eef6ff;border:1px solid #b6d4f5;border-radius:8px;padding:8px 12px;margin:0 0 12px;font-size:13px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
-          <span>🔗 Đang mở theo <b>link phân công từ Phòng Chỉ đạo tuyến</b> — chỉ hiển thị các chức năng liên quan.</span>
-          <button type="button" class="ghost small-btn" id="unit-focus-off">☰ Hiện đầy đủ menu của khoa</button>
-        </div>`
-      : '';
+    if (focus) state.tab = 'phancong';
     root.innerHTML = topbar('Đăng nhập: ' + state.unitName, tabs) + toastHtml();
     bindTopbar(tabs, renderUnitApp);
-    if (focusBannerHtml){
-      const tabContentEl = document.getElementById('tab-content');
-      tabContentEl.insertAdjacentHTML('beforebegin', focusBannerHtml);
-      document.getElementById('unit-focus-off').onclick = ()=>{ state.unitLinkFocus = false; renderUnitApp(); };
-    }
     const content = document.getElementById('tab-content');
     if (state.tab === 'nhanvien') renderUnitEmployees(content);
     if (state.tab === 'phancong') renderUnitPhanCong(content);
@@ -1470,7 +1455,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     // ====== Chế độ xem: Danh sách đầy đủ / Lật từng học viên / Dashboard tổng quan ======
     // (Bổ sung theo yêu cầu Trưởng khoa — không thay đổi dữ liệu hay logic phân công đã có,
     // chỉ thêm cách hiển thị khác cho cùng dữ liệu "cho"/"xong" ở trên.)
-    const viewMode = state.phanCongViewMode || 'list';
+    // Khi khoa vào qua link rút gọn: đưa thẳng vào "Dashboard tổng quan" — đây là màn thao tác
+    // nhanh nhất (bảng gộp + khu ký 1 lần cho tất cả) mà Trưởng khoa cần, khỏi phải tự bấm chọn
+    // chế độ xem. Admin xem theo góc độ khoa/phòng thì vẫn có đủ 3 chế độ để chọn như cũ.
+    const focus = !!state.unitLinkFocus;
+    const viewMode = focus ? 'dashboard' : (state.phanCongViewMode || 'list');
     // "Lật từng học viên" duyệt qua TẤT CẢ học viên của khoa (cả đã phân công lẫn đang chờ) để có thể
     // xem lại bất cứ lúc nào — không chỉ hoạt động khi còn người đang chờ phân công.
     const flipList = pendingItems.slice().sort((a,b)=> (a.t.hoTen||'').localeCompare(b.t.hoTen||''));
@@ -1501,7 +1490,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           </tbody>
         </table>`;
     }
-    const toggleXemHtml = `
+    const toggleXemHtml = focus ? `
+      ${cho.length ? `<p class="muted" style="margin:10px 0 6px">${soDaPhanHD}/${cho.length} đã chọn người hướng dẫn</p>` : ''}
+    ` : `
       <div class="row-flex" style="gap:8px;margin:10px 0 6px;flex-wrap:wrap">
         <button type="button" class="${viewMode==='list' ? '' : 'secondary'}" data-dnpc-mode="list">📋 Danh sách đầy đủ</button>
         <button type="button" class="${viewMode==='flip' ? '' : 'secondary'}" data-dnpc-mode="flip">🔁 Lật từng học viên</button>
@@ -1601,6 +1592,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       <div class="card">
         <h3>📋 Đề nghị phân công hướng dẫn từ Phòng Chỉ đạo tuyến</h3>
         <p class="muted" style="margin-top:-6px">Khoa/phòng tự chọn nhân viên đủ điều kiện hướng dẫn của khoa mình cho từng học viên, ký xác nhận — hệ thống tự đưa vào phụ lục theo dõi, không cần Phòng CĐT nhập lại.</p>
+        ${!focus ? `<div class="row-flex" style="margin:6px 0 2px">
+          <button type="button" class="ghost small-btn" id="btn-open-eligible-modal">👤 Danh sách nhân viên đủ điều kiện hướng dẫn (${staffOptions.length})</button>
+        </div>` : ''}
         ${toggleXemHtml}
         ${viewMode==='dashboard' ? dashboardHtml : `
         ${!choHienThi.length ? '<p class="muted">Hiện không có đề nghị nào đang chờ khoa phân công.</p>' : ''}
@@ -1638,7 +1632,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
                     return `<option value="${e.id}" ${r.nguoiHuongDanId===e.id?'selected':''} ${full?'disabled':''}>${e.hoTen} (${cnt}/5 đang hướng dẫn)${full?' — Đã đủ 5':''}</option>`;
                   }).join('')}
                 </select>
-                ${!staffOptions.length ? '<p class="muted" style="color:var(--red)">⚠ Khoa chưa có nhân viên nào được đánh dấu "Đủ điều kiện hướng dẫn". Vào tab "👤 Nhân viên của khoa" để đánh dấu, hoặc liên hệ Phòng CĐT.</p>' : ''}
+                ${!staffOptions.length ? '<p class="muted" style="color:var(--red)">⚠ Khoa chưa có nhân viên nào được đánh dấu "Đủ điều kiện hướng dẫn". <button type="button" class="ghost small-btn" data-open-eligible-modal="1" style="margin-left:4px">✓ Đánh dấu ngay</button></p>' : ''}
               </div>
             </div>
 
@@ -1951,6 +1945,13 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         renderUnitPhanCong(content);
       };
     });
+    // Nút "Danh sách nhân viên đủ điều kiện hướng dẫn" / "✓ Đánh dấu ngay" — thay cho tab "Nhân viên
+    // của khoa" đã bị ẩn khi truy cập qua link rút gọn. Mở hộp thoại nhỏ ngay trên màn phân công.
+    const btnOpenEligible = content.querySelector('#btn-open-eligible-modal');
+    if (btnOpenEligible) btnOpenEligible.onclick = ()=> openEligibleInstructorsModal(()=>renderUnitPhanCong(content));
+    content.querySelectorAll('[data-open-eligible-modal]').forEach(btn=>{
+      btn.onclick = ()=> openEligibleInstructorsModal(()=>renderUnitPhanCong(content));
+    });
     const dnpcTenKyChungInput = content.querySelector('#dnpc-ten-ky-chung');
     if (dnpcTenKyChungInput) dnpcTenKyChungInput.oninput = ()=>{ state.dnpcTenKyChung = dnpcTenKyChungInput.value; };
     const btnKyLai = content.querySelector('#dnpc-sig-relist');
@@ -2139,6 +2140,51 @@ https://github.com/nodeca/pako/blob/main/LICENSE
   function toastHtml(){ return state.toast ? `<div class="toast">${state.toast}</div>` : ''; }
 
   function myEmployees(){ return state.employees.filter(e=>e.donViId===state.unitId); }
+
+  // ---------- Hộp thoại nhỏ: đánh dấu "Đủ điều kiện hướng dẫn" ngay trên màn Phân công ----------
+  // Dùng thay cho tab "Nhân viên của khoa" khi khoa vào qua link rút gọn (chỉ có 1 màn Phân công).
+  // Chỉ làm đúng 1 việc: bật/tắt "Đủ điều kiện hướng dẫn" cho nhân viên đã có, và thêm nhanh 1 nhân
+  // viên mới nếu chưa có trong danh sách — không có các chức năng quản lý/lọc/xuất phức tạp khác.
+  function openEligibleInstructorsModal(onDone){
+    const overlay = el(`<div class="modal-overlay"><div class="modal" style="max-width:560px">
+      <h3>👤 Nhân viên đủ điều kiện hướng dẫn — ${state.unitName}</h3>
+      <p class="muted" style="margin-top:-6px">Tích chọn những nhân viên của khoa đủ điều kiện hướng dẫn học viên thực hành. Danh sách này dùng để hiện lên ở Bước 1 khi phân công.</p>
+      <div id="eli-list" style="max-height:340px;overflow:auto;margin-top:8px;border:1px solid var(--line);border-radius:6px"></div>
+      <div class="row-flex" style="justify-content:space-between;margin-top:14px;flex-wrap:wrap;gap:8px">
+        <button type="button" class="secondary small-btn" id="eli-add-emp">➕ Thêm nhân viên mới của khoa</button>
+        <button type="button" id="eli-close">Xong</button>
+      </div>
+    </div></div>`);
+    root.appendChild(overlay);
+    function renderList(){
+      const list = myEmployees().filter(e=> e.trangThaiNhanVien!=='Chờ duyệt').slice().sort((a,b)=>(a.hoTen||'').localeCompare(b.hoTen||''));
+      const wrap = overlay.querySelector('#eli-list');
+      if (!list.length){
+        wrap.innerHTML = `<div class="empty" style="padding:16px">Khoa chưa có nhân viên nào. Bấm "➕ Thêm nhân viên mới của khoa" bên dưới.</div>`;
+        return;
+      }
+      wrap.innerHTML = list.map(e=>`
+        <label style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--line);cursor:pointer">
+          <input type="checkbox" data-eli-emp="${e.id}" ${e.dieuKienHuongDan?'checked':''} style="width:auto" />
+          <span>${e.hoTen}${e.chucVuHR||e.chucVu ? ' <span class="muted" style="font-size:12.5px">— '+(e.chucVuHR||e.chucVu)+'</span>' : ''}</span>
+        </label>
+      `).join('');
+      wrap.querySelectorAll('[data-eli-emp]').forEach(chk=>{
+        chk.onchange = async ()=>{
+          const emp = state.employees.find(x=>x.id===chk.getAttribute('data-eli-emp'));
+          if (!emp) return;
+          emp.dieuKienHuongDan = chk.checked;
+          await saveEmployees();
+          showToast(chk.checked ? ('Đã đánh dấu đủ điều kiện hướng dẫn: '+emp.hoTen) : ('Đã bỏ đủ điều kiện hướng dẫn: '+emp.hoTen));
+        };
+      });
+    }
+    renderList();
+    overlay.querySelector('#eli-add-emp').onclick = ()=>{
+      openEmployeeModal(null, ()=>{ renderList(); if (onDone) onDone(); });
+    };
+    overlay.querySelector('#eli-close').onclick = ()=>{ overlay.remove(); if (onDone) onDone(); };
+  }
 
   function renderUnitEmployees(content){
     const list = myEmployees();
