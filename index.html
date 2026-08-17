@@ -112,6 +112,7 @@
 
 <div id="cnkt-root"></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script>
 /* JSZip 3.10.1 - nhung truc tiep de xem truoc file .docx khong can tai tu CDN ngoai */
@@ -326,6 +327,20 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     return (dm && Array.isArray(dm[key]) && dm[key].length) ? dm[key] : fallback;
   }
   function CHUC_DANH_LIST(){ return dmList('chucDanh', CHUC_DANH_DEFAULT); }
+  // ---- Phân loại Khoa/Phòng thành Lâm sàng / Cận lâm sàng / Phòng chức năng — dùng để lọc bớt các
+  // Phòng chức năng (không trực tiếp nhận học viên thực hành) ra khỏi các bảng thống kê/tải trọng
+  // theo khoa. Admin có thể sửa tay từng đơn vị ở "Quản lý đơn vị"; nếu chưa từng sửa, hệ thống tự
+  // đoán theo tên (mọi đơn vị tên bắt đầu bằng "Phòng" → Phòng chức năng; đơn vị cận lâm sàng quen
+  // thuộc theo từ khoá; còn lại mặc định là Lâm sàng).
+  const LOAI_KHOA_OPTIONS = ['Lâm sàng', 'Cận lâm sàng', 'Phòng chức năng'];
+  function guessLoaiKhoa(name){
+    const n = (name||'').trim().toLowerCase();
+    if (n.startsWith('phòng')) return 'Phòng chức năng';
+    const canLamSangKw = ['chẩn đoán hình ảnh','xét nghiệm','hóa sinh','huyết học','vi sinh','giải phẫu bệnh','dược','kiểm soát nhiễm khuẩn','dinh dưỡng','thăm dò chức năng'];
+    if (canLamSangKw.some(k=> n.includes(k))) return 'Cận lâm sàng';
+    return 'Lâm sàng';
+  }
+  function loaiKhoaOf(u){ return (u && (u.loai || guessLoaiKhoa(u.name))) || 'Lâm sàng'; }
   function TRINH_DO_LIST(){ return dmList('trinhDo', TRINH_DO_DEFAULT); }
   function LOAI_HINH_THUC_HANH_LIST(){ return dmList('loaiHinh', LOAI_HINH_THUC_HANH_DEFAULT); }
   function NOI_CAP_CCCD_LIST(){ return dmList('noiCapCccd', NOI_CAP_CCCD_DEFAULT); }
@@ -660,7 +675,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         <input id="clm-url" value="${url}" readonly style="font-size:13px" />
       </div>
       <div class="row-flex" style="justify-content:flex-end;margin-top:10px">
-        <button type="button" class="secondary" id="clm-copy-btn">📋 Thử copy tự động</button>
+        <button type="button" class="secondary" id="clm-copy-btn">📋 Copy tự động</button>
         <button type="button" id="clm-close">Đóng</button>
       </div>
     </div></div>`);
@@ -2127,6 +2142,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           ketQua: 'Chưa đánh giá',
           nhanXet: '',
           minhChungFile: '', minhChungFileType: '', minhChungFileName: '', minhChungLink: '',
+          dotLapKeHoachId: r.dotLapKeHoachId||'', dotLapKeHoachTen: r.dotLapKeHoachTen||'',
         });
         recomputeTraineeOverallStatus(t);
         await saveTrainee(t);
@@ -2223,6 +2239,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           ketQua: 'Chưa đánh giá',
           nhanXet: '',
           minhChungFile: '', minhChungFileType: '', minhChungFileName: '', minhChungLink: '',
+          dotLapKeHoachId: r.dotLapKeHoachId||'', dotLapKeHoachTen: r.dotLapKeHoachTen||'',
         });
         recomputeTraineeOverallStatus(t);
         await saveTrainee(t);
@@ -2299,6 +2316,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             ketQua: 'Chưa đánh giá',
             nhanXet: '',
             minhChungFile: '', minhChungFileType: '', minhChungFileName: '', minhChungLink: '',
+            dotLapKeHoachId: r.dotLapKeHoachId||'', dotLapKeHoachTen: r.dotLapKeHoachTen||'',
           });
           recomputeTraineeOverallStatus(t);
           await saveTrainee(t);
@@ -3856,9 +3874,14 @@ https://github.com/nodeca/pako/blob/main/LICENSE
   // phân bổ học viên qua các khoa theo thời gian, phát hiện sớm tháng/khoa nào bị dồn quá đông
   // (dễ phát sinh khiếu nại) hoặc quá vắng (chưa tận dụng hết năng lực đào tạo), để điều chỉnh lộ
   // trình luân khoa cho hợp lý hơn TRƯỚC khi áp dụng chính thức.
-  function computeMonthlyLoadHeatmap(monthsCount, startIso){
+  function computeMonthlyLoadHeatmap(monthsCount, startIso, dotId){
     monthsCount = monthsCount || 12;
-    const units = (state.config.units||[]).slice().sort((a,b)=>a.name.localeCompare(b.name));
+    // CHỈ lấy khoa Lâm sàng + Cận lâm sàng — loại bỏ Phòng chức năng (không trực tiếp nhận học viên
+    // thực hành luân khoa) ra khỏi bảng, cho gọn và đúng đối tượng cần xem.
+    const units = (state.config.units||[]).filter(u=>{
+      const loai = loaiKhoaOf(u);
+      return loai==='Lâm sàng' || loai==='Cận lâm sàng';
+    }).slice().sort((a,b)=>a.name.localeCompare(b.name));
     const start = startIso || todayISO();
     const [sy, sm] = start.slice(0,7).split('-').map(Number);
     const months = [];
@@ -3876,6 +3899,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         (state.trainees||[]).forEach(t=>{
           (t.giaiDoan||[]).forEach(s=>{
             if (s.khoaId !== u.id) return;
+            // Lọc theo "đợt lập kế hoạch" nếu có chọn — dotId='' nghĩa là xem TẤT CẢ các đợt gộp lại.
+            if (dotId && s.dotLapKeHoachId !== dotId) return;
             const sFrom = s.tuNgay || '0000-01-01';
             const sTo = s.denNgay || '9999-12-31';
             if (sFrom <= mo.to && sTo >= mo.from) n++;
@@ -3884,14 +3909,28 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         return n;
       });
       return { unitId:u.id, name:u.name, counts, max: Math.max(0,...counts), total: counts.reduce((a,b)=>a+b,0) };
-    }).filter(r=> r.total>0);
+    }); // Không lọc bỏ khoa có total=0 nữa — để thấy được cả khoa CHƯA có học viên nào trong 12 tháng
+        // (giúp Trưởng phòng CĐT nhận ra khoa nào đang trống để cân đối, đúng như bảng dự thảo).
     return { months, rows };
+  }
+  // Danh sách các "đợt lập kế hoạch" đã từng áp dụng (có tên, không rỗng), suy ra từ dữ liệu
+  // giaiDoan hiện có — dùng để đổ vào dropdown lọc trên bảng tải trọng, kèm số học viên mỗi đợt.
+  function danhSachDotLapKeHoach(){
+    const map = {};
+    (state.trainees||[]).forEach(t=>{
+      (t.giaiDoan||[]).forEach(s=>{
+        if (!s.dotLapKeHoachId || !s.dotLapKeHoachTen) return;
+        if (!map[s.dotLapKeHoachId]) map[s.dotLapKeHoachId] = { id:s.dotLapKeHoachId, ten:s.dotLapKeHoachTen, count:0 };
+        map[s.dotLapKeHoachId].count++;
+      });
+    });
+    return Object.values(map).sort((a,b)=> a.ten.localeCompare(b.ten,'vi'));
   }
   // ---- Xem trước tải trọng của MỘT DỰ THẢO (chưa lưu vào hệ thống) trong "Lập kế hoạch phân bổ
   // hàng loạt" — cộng dồn với tải ĐÃ CÓ SẴN trong hệ thống để thấy đúng bức tranh thật sau khi áp
   // dụng, giúp phát hiện khoa bị dồn quá tải NGAY TRƯỚC KHI bấm "Áp dụng chính thức". ----
-  function openDraftHeatmapModal(draft){
-    const activeDraft = (draft||[]).filter(d=>!d.excluded);
+  function openDraftHeatmapModal(draft, onEditTrainee){
+    const activeDraft = (draft||[]).map((d,idx)=>({...d, _idx:idx})).filter(d=>!d.excluded);
     if (!activeDraft.length){ alert('Không có học viên nào (chưa bị bỏ tick) trong dự thảo để xem.'); return; }
     const starts = activeDraft.flatMap(d=>d.rows.map(r=>r.tuNgay)).filter(Boolean).sort();
     const ends = activeDraft.flatMap(d=>d.rows.map(r=>r.denNgay)).filter(Boolean).sort();
@@ -3932,10 +3971,29 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       }));
       return n;
     }
-    // Lấy TOÀN BỘ khoa trong hệ thống (không chỉ khoa xuất hiện trong dự thảo) để thấy được cả
-    // những khoa CHƯA được phân học viên nào trong đợt này — dễ nhận ra chỗ còn trống để dồn bớt
-    // học viên từ khoa đang quá tải sang.
-    const khoaIds = (state.config.units||[]).map(u=>u.id);
+    // Danh sách học viên trong dự thảo (kèm _idx = vị trí gốc trong mảng draft, dùng để mở đúng
+    // form "✏️ Sửa" của người đó ở Bước 2) đang chiếm chỗ tại 1 khoa + 1 tháng cụ thể — dùng khi
+    // bấm vào ô "dự thảo thêm" trên bản đồ tải trọng để biết ngay ai đang gây quá tải và sửa luôn.
+    function draftStudentsAt(khoaId, mo){
+      const out = [];
+      activeDraft.forEach(d=>{
+        const hit = d.rows.some(r=>{
+          if (r.khoaId !== khoaId) return false;
+          const f = r.tuNgay || '0000-01-01', to = r.denNgay || '9999-12-31';
+          return f <= mo.to && to >= mo.from;
+        });
+        if (hit) out.push({ idx:d._idx, hoTen:d.hoTen });
+      });
+      return out;
+    }
+    // Chỉ lấy khoa Lâm sàng + Cận lâm sàng (loại bỏ Phòng chức năng — không trực tiếp nhận học viên
+    // thực hành) để bảng gọn và đúng đối tượng, nhưng vẫn lấy TOÀN BỘ khoa lâm sàng/cận lâm sàng
+    // trong hệ thống (không chỉ khoa xuất hiện trong dự thảo) để thấy cả khoa CHƯA được phân học
+    // viên nào trong đợt này — dễ nhận ra chỗ còn trống để dồn bớt học viên từ khoa đang quá tải sang.
+    const khoaIds = (state.config.units||[]).filter(u=>{
+      const loai = loaiKhoaOf(u);
+      return loai==='Lâm sàng' || loai==='Cận lâm sàng';
+    }).map(u=>u.id);
     const rows = khoaIds.map(khoaId=>{
       const u = (state.config.units||[]).find(x=>x.id===khoaId);
       const rTpl = activeDraft.flatMap(d=>d.rows).find(r=>r.khoaId===khoaId);
@@ -3943,25 +4001,28 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       const existing = months.map(mo=> existingCount(khoaId, mo));
       const added = months.map(mo=> draftCount(khoaId, mo));
       const total = months.map((mo,idx)=> existing[idx]+added[idx]);
-      return { name, existing, added, total };
+      return { khoaId, name, existing, added, total };
     }).sort((a,b)=> a.name.localeCompare(b.name,'vi'));
     const overlay = el(`<div class="modal-overlay"><div class="modal" style="max-width:96vw;width:96vw;max-height:92vh;display:flex;flex-direction:column">
-      <div class="row-flex" style="justify-content:space-between;align-items:center">
+      <div class="row-flex" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <h3 style="margin:0">🌡️ Tải trọng dự thảo này theo khoa &amp; tháng (${activeDraft.length} học viên)</h3>
-        <button type="button" id="dh-close">Đóng</button>
+        <div class="row-flex" style="gap:6px">
+          <button type="button" class="secondary" id="dh-export-excel">📊 Xuất Excel</button>
+          <button type="button" id="dh-close">Đóng</button>
+        </div>
       </div>
-      <p class="muted" style="margin-top:-4px">Mỗi ô hiển thị dạng <b>"đã có + dự thảo này = tổng"</b>. "Đã có" là số học viên đang thực hành thật sự tại khoa đó trong hệ thống (chưa tính dự thảo). "Dự thảo này" là số học viên SẼ được thêm vào nếu bấm "Áp dụng". Màu ô tính theo TỔNG — nếu thấy ô đỏ, nên quay lại chỉnh lộ trình hoặc ngày bắt đầu trước khi áp dụng.</p>
+      <p class="muted" style="margin-top:-4px">Mỗi ô hiển thị dạng <b>"đã có + dự thảo này = tổng"</b>. "Đã có" là số học viên đang thực hành thật sự tại khoa đó trong hệ thống (chưa tính dự thảo). "Dự thảo này" là số học viên SẼ được thêm vào nếu bấm "Áp dụng". Màu ô tính theo TỔNG — nếu thấy ô đỏ, nên quay lại chỉnh lộ trình hoặc ngày bắt đầu trước khi áp dụng. ${onEditTrainee ? '<b>Bấm vào 1 ô có số</b> để xem đúng những học viên nào trong dự thảo đang chiếm chỗ ở khoa/tháng đó, và sửa nhanh khoa cho họ.' : ''}</p>
       <div style="overflow:auto;flex:1">
       <table style="table-layout:fixed;font-size:12px">
-        <thead><tr><th style="width:40px;text-align:center;position:sticky;left:0;background:#1f7a4d">STT</th><th style="width:170px;text-align:left;position:sticky;left:40px;background:#1f7a4d">Khoa/Phòng</th>${months.map(m=>`<th style="width:78px;text-align:center">${m.label}</th>`).join('')}<th style="width:70px;text-align:center">Tổng</th></tr></thead>
+        <thead><tr><th style="width:40px;text-align:center;position:sticky;top:0;left:0;z-index:3;background:#1f7a4d">STT</th><th style="width:170px;text-align:left;position:sticky;top:0;left:40px;z-index:3;background:#1f7a4d">Khoa/Phòng</th>${months.map(m=>`<th style="width:78px;text-align:center;position:sticky;top:0;z-index:2;background:#1f7a4d">${m.label}</th>`).join('')}<th style="width:70px;text-align:center;position:sticky;top:0;z-index:2;background:#1f7a4d">Tổng</th></tr></thead>
         <tbody>${rows.map((r,idx0)=>{
           const tongExisting = r.existing.reduce((a,b)=>a+b,0);
           const tongAdded = r.added.reduce((a,b)=>a+b,0);
           const tongAll = tongExisting + tongAdded;
           return `
           <tr>
-            <td style="position:sticky;left:0;background:#fff;text-align:center;color:#888">${idx0+1}</td>
-            <td style="position:sticky;left:40px;background:#fff;font-weight:bold">${r.name}</td>
+            <td style="position:sticky;left:0;z-index:1;background:#fff;text-align:center;color:#888">${idx0+1}</td>
+            <td style="position:sticky;left:40px;z-index:1;background:#fff;font-weight:bold">${r.name}</td>
             ${r.total.map((n,idx)=>{
               let bg = '#fff', color = '#999';
               if (n>=7){ bg='#c0392b'; color='#fff'; }
@@ -3969,7 +4030,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
               else if (n>=3){ bg='#f1c40f'; color='#5a4a00'; }
               else if (n>=1){ bg='#a8e6b8'; color='#1e6b34'; }
               const addedN = r.added[idx];
-              return '<td style="text-align:center;background:'+bg+';color:'+color+'">'+
+              const clickable = onEditTrainee && addedN>0;
+              return '<td style="text-align:center;background:'+bg+';color:'+color+(clickable?';cursor:pointer;text-decoration:underline dotted':'')+'"'+
+                (clickable ? ' data-heat-cell="'+r.khoaId+'::'+idx+'" title="Bấm để xem/sửa học viên đang chiếm chỗ ở đây"' : '') + '>'+
                 (n>0 ? (r.existing[idx]+(addedN>0?' <b>+'+addedN+'</b>':'')+' = '+n) : '') +
               '</td>';
             }).join('')}
@@ -3981,6 +4044,108 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     </div></div>`);
     root.appendChild(overlay);
     overlay.querySelector('#dh-close').onclick = ()=> overlay.remove();
+    if (onEditTrainee){
+      overlay.querySelectorAll('[data-heat-cell]').forEach(td=>{
+        td.onclick = ()=>{
+          const [khoaId, moIdx] = td.getAttribute('data-heat-cell').split('::');
+          const mo = months[+moIdx];
+          const u = (state.config.units||[]).find(x=>x.id===khoaId);
+          const students = draftStudentsAt(khoaId, mo);
+          if (!students.length) return;
+          const pop = el(`<div class="modal-overlay" style="z-index:10000"><div class="modal" style="max-width:420px">
+            <h3 style="margin-top:0">${u?u.name:''} — ${mo.label}</h3>
+            <p class="muted" style="margin-top:-6px">${students.length} học viên trong dự thảo đang chiếm chỗ ở đây. Bấm "✏️ Sửa" để đổi khoa/ngày cho người đó ngay.</p>
+            <div style="max-height:300px;overflow:auto">
+              ${students.map(s=>`
+                <div class="row-flex" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)">
+                  <span>${s.hoTen}</span>
+                  <button type="button" class="ghost small-btn" data-heat-edit="${s.idx}">✏️ Sửa</button>
+                </div>
+              `).join('')}
+            </div>
+            <div class="row-flex" style="justify-content:flex-end;margin-top:10px">
+              <button type="button" id="heat-pop-close">Đóng</button>
+            </div>
+          </div></div>`);
+          root.appendChild(pop);
+          pop.querySelector('#heat-pop-close').onclick = ()=> pop.remove();
+          pop.querySelectorAll('[data-heat-edit]').forEach(b=>{
+            b.onclick = ()=>{
+              const idx = +b.getAttribute('data-heat-edit');
+              pop.remove();
+              overlay.remove();
+              onEditTrainee(idx);
+            };
+          });
+        };
+      });
+    }
+    overlay.querySelector('#dh-export-excel').onclick = async ()=>{
+      // Xuất đúng bảng đang xem (khoa × 12 tháng, TÍNH CẢ khoa chưa có học viên nào), sheet đầu tô
+      // màu theo TỔNG giống hệt màn hình (🟩🟨🟧🟥), kèm 2 sheet phụ tách riêng "đã có" và "dự thảo
+      // thêm" cho ai cần đối chiếu số liệu chi tiết.
+      try {
+        const wb = new ExcelJS.Workbook();
+        const headerLabels = months.map(m=>m.label);
+        const ws1 = wb.addWorksheet('TongHop');
+        ws1.addRow(['STT','Khoa/Phòng', ...headerLabels, 'Tổng']);
+        // Ô = 0 để TRỐNG (không ghi số 0) cho đỡ rối mắt — chỉ hiện số khi thật sự có học viên.
+        rows.forEach((r,i)=>{ const tongDong = r.total.reduce((a,b)=>a+b,0); ws1.addRow([i+1, r.name, ...r.total.map(n=>n>0?n:null), tongDong>0?tongDong:null]); });
+        const hRow1 = ws1.getRow(1); hRow1.height = 24;
+        hRow1.eachCell(cell=>{
+          cell.font = { bold:true, color:{argb:'FFFFFFFF'} };
+          cell.fill = { type:'pattern', pattern:'solid', fgColor:{argb:XLSX_HEADER_FILL} };
+          cell.alignment = { vertical:'middle', horizontal:'center', wrapText:true };
+          cell.border = xlsxThinBorder();
+        });
+        rows.forEach((r, idx)=>{
+          const row = ws1.getRow(idx+2);
+          row.getCell(1).alignment = { horizontal:'center' };
+          row.getCell(1).border = xlsxThinBorder();
+          row.getCell(2).font = { bold:true };
+          row.getCell(2).border = xlsxThinBorder();
+          r.total.forEach((n, ci)=>{
+            const cell = row.getCell(3+ci);
+            cell.alignment = { horizontal:'center' };
+            const c = xlsxHeatColor(n);
+            if (c){ cell.fill = { type:'pattern', pattern:'solid', fgColor:{argb:c.fill} }; cell.font = { bold:true, color:{argb:c.font} }; cell.border = xlsxThinBorder(); }
+          });
+          const lastCell = row.getCell(3+r.total.length);
+          lastCell.font = { bold:true };
+          lastCell.border = xlsxThinBorder();
+        });
+        ws1.columns = [{width:6},{width:24}, ...headerLabels.map(()=>({width:9})), {width:9}];
+        ws1.views = [{ state:'frozen', xSplit:2, ySplit:1 }];
+
+        const headers2 = ['STT','Khoa/Phòng', ...headerLabels, 'Tổng'];
+        const rowsExisting = rows.map((r,i)=> [i+1, r.name, ...r.existing.map(n=>n>0?n:null), (r.existing.reduce((a,b)=>a+b,0))||null]);
+        const rowsAdded = rows.map((r,i)=> [i+1, r.name, ...r.added.map(n=>n>0?n:null), (r.added.reduce((a,b)=>a+b,0))||null]);
+        const ws2 = wb.addWorksheet('DaCoSan');
+        ws2.addRow(headers2); rowsExisting.forEach(r=>ws2.addRow(r)); xlsxStyleSheet(ws2, headers2, rowsExisting);
+        const ws3 = wb.addWorksheet('DuThaoThem');
+        ws3.addRow(headers2); rowsAdded.forEach(r=>ws3.addRow(r)); xlsxStyleSheet(ws3, headers2, rowsAdded);
+
+        await downloadWorkbook(wb, 'tai_trong_du_thao_theo_khoa_thang_' + todayISO() + '.xlsx');
+      } catch(e){
+        console.error('Lỗi xuất Excel (ExcelJS), dùng lại cách xuất đơn giản:', e);
+        const headers1 = ['Khoa/Phòng', ...months.map(m=>m.label), 'Tổng'];
+        const rows1 = rows.map(r=>{
+          const tongAll = r.total.reduce((a,b)=>a+b,0);
+          return [r.name, ...r.total.map((n,idx)=> n>0 ? (r.existing[idx] + (r.added[idx]>0?'+'+r.added[idx]:'') + '='+n) : 0), tongAll];
+        });
+        const headers2 = ['Khoa/Phòng', ...months.map(m=>m.label), 'Tổng'];
+        const rowsExisting = rows.map(r=> [r.name, ...r.existing, r.existing.reduce((a,b)=>a+b,0)]);
+        const rowsAdded = rows.map(r=> [r.name, ...r.added, r.added.reduce((a,b)=>a+b,0)]);
+        exportXlsxMultiSheet(
+          [
+            { name:'TongHop', headers:headers1, rows:rows1 },
+            { name:'DaCoSan', headers:headers2, rows:rowsExisting },
+            { name:'DuThaoThem', headers:headers2, rows:rowsAdded },
+          ],
+          'tai_trong_du_thao_theo_khoa_thang_' + todayISO() + '.xlsx'
+        );
+      }
+    };
   }
 
   function computeByUnit(fromDate, toDate){
@@ -4840,34 +5005,156 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     renderListWrap();
   }
 
-  function exportXlsxGeneric(headers, rows, filename, sheetName){
-    const data = [headers].concat(rows);
-    const ws = XLSX.utils.aoa_to_sheet(data);
-    ws['!cols'] = headers.map((h, i)=>{
-      let maxLen = String(h).length;
-      rows.forEach(r=>{ const v = String(r[i]==null?'':r[i]); if (v.length > maxLen) maxLen = v.length; });
-      return { wch: Math.min(Math.max(maxLen + 2, 10), 45) };
+  // ---- Xuất Excel "đẹp" bằng ExcelJS: header xanh đậm chữ trắng, viền kẻ ô, sọc xen kẽ dòng, ghim
+  // dòng tiêu đề khi cuộn, tự bật bộ lọc — thay cho bảng trắng đen mặc định trước đây. Vẫn giữ
+  // nguyên chữ ký hàm cũ (gọi không cần await) để không phải sửa hàng chục nơi đang gọi hàm này.
+  const XLSX_HEADER_FILL = 'FF1F7A4D'; // trùng màu xanh --green của giao diện
+  const XLSX_ZEBRA_FILL = 'FFF3F8F4';
+  const XLSX_BORDER_COLOR = 'FFD8D8D8';
+  function xlsxThinBorder(){
+    return {
+      top:{style:'thin', color:{argb:XLSX_BORDER_COLOR}}, left:{style:'thin', color:{argb:XLSX_BORDER_COLOR}},
+      bottom:{style:'thin', color:{argb:XLSX_BORDER_COLOR}}, right:{style:'thin', color:{argb:XLSX_BORDER_COLOR}}
+    };
+  }
+  function xlsxStyleSheet(ws, headers, rows){
+    const headerRow = ws.getRow(1);
+    headerRow.height = 22;
+    headerRow.eachCell(cell=>{
+      cell.font = { bold:true, color:{argb:'FFFFFFFF'}, size:11 };
+      cell.fill = { type:'pattern', pattern:'solid', fgColor:{argb:XLSX_HEADER_FILL} };
+      cell.alignment = { vertical:'middle', horizontal:'center', wrapText:true };
+      cell.border = xlsxThinBorder();
     });
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, sheetName || 'DuLieu');
-    XLSX.writeFile(wb, filename);
+    for (let r=0; r<rows.length; r++){
+      const row = ws.getRow(r+2);
+      row.eachCell({ includeEmpty:true }, (cell, colNum)=>{
+        cell.border = xlsxThinBorder();
+        cell.alignment = { vertical:'middle', horizontal: (typeof rows[r][colNum-1]==='number') ? 'center' : 'left' };
+        if (r % 2 === 1) cell.fill = { type:'pattern', pattern:'solid', fgColor:{argb:XLSX_ZEBRA_FILL} };
+      });
+    }
+    ws.columns = headers.map((h,i)=>{
+      let maxLen = String(h).length;
+      rows.forEach(row=>{ const v = String(row[i]==null?'':row[i]); if (v.length > maxLen) maxLen = v.length; });
+      return { width: Math.min(Math.max(maxLen + 2, 10), 45) };
+    });
+    ws.views = [{ state:'frozen', ySplit:1 }];
+    if (headers.length){
+      ws.autoFilter = { from:{row:1,column:1}, to:{row:1,column:headers.length} };
+    }
+  }
+  async function downloadWorkbook(wb, filename){
+    const buf = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buf], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(()=> URL.revokeObjectURL(url), 4000);
+  }
+  // Màu ô theo mức tải (khớp đúng bảng 🟩🟨🟧🟥 hiển thị trên màn hình) — dùng cho bảng "tải trọng
+  // theo khoa & tháng" khi xuất Excel, để file tải về nhìn trực quan giống hệt màn hình, không phải
+  // bảng trắng đen khô khan.
+  function xlsxHeatColor(n){
+    if (n>=7) return { fill:'FFC0392B', font:'FFFFFFFF' };
+    if (n>=5) return { fill:'FFE67E22', font:'FFFFFFFF' };
+    if (n>=3) return { fill:'FFF1C40F', font:'FF5A4A00' };
+    if (n>=1) return { fill:'FFA8E6B8', font:'FF1E6B34' };
+    return null;
+  }
+  // headerLabels: mảng nhãn cột số liệu (VD tháng); rows: [{ stt, name, counts:[...], total }]
+  async function exportHeatmapXlsx(headerLabels, rows, filename, sheetName){
+    try {
+      const wb = new ExcelJS.Workbook();
+      const ws = wb.addWorksheet((sheetName||'TaiTrong').slice(0,31));
+      ws.addRow(['STT', 'Khoa/Phòng', ...headerLabels, 'Tổng']);
+      // Ô = 0 để TRỐNG (không ghi số 0) cho đỡ rối mắt — chỉ hiện số khi thật sự có học viên.
+      rows.forEach(r=> ws.addRow([r.stt, r.name, ...r.counts.map(n=> n>0?n:null), r.total>0?r.total:null]));
+      const headerRow = ws.getRow(1);
+      headerRow.height = 24;
+      headerRow.eachCell(cell=>{
+        cell.font = { bold:true, color:{argb:'FFFFFFFF'}, size:11 };
+        cell.fill = { type:'pattern', pattern:'solid', fgColor:{argb:XLSX_HEADER_FILL} };
+        cell.alignment = { vertical:'middle', horizontal:'center', wrapText:true };
+        cell.border = xlsxThinBorder();
+      });
+      rows.forEach((r, idx)=>{
+        const row = ws.getRow(idx+2);
+        row.getCell(1).alignment = { vertical:'middle', horizontal:'center' };
+        row.getCell(1).border = xlsxThinBorder();
+        row.getCell(2).alignment = { vertical:'middle', horizontal:'left' };
+        row.getCell(2).font = { bold:true };
+        row.getCell(2).border = xlsxThinBorder();
+        r.counts.forEach((n, ci)=>{
+          const cell = row.getCell(3+ci);
+          cell.alignment = { vertical:'middle', horizontal:'center' };
+          const c = xlsxHeatColor(n);
+          if (c){
+            cell.fill = { type:'pattern', pattern:'solid', fgColor:{argb:c.fill} };
+            cell.font = { bold:true, color:{argb:c.font} };
+            cell.border = xlsxThinBorder();
+          }
+          // Ô không có học viên (n=0/rỗng): KHÔNG kẻ viền — để trống hẳn cho đỡ rối mắt, tránh viền
+          // dày đặc ở các ô trống tạo cảm giác xám mờ như lưới caro khi mở trong Excel.
+        });
+        const totalCell = row.getCell(3+r.counts.length);
+        totalCell.alignment = { vertical:'middle', horizontal:'center' };
+        totalCell.font = { bold:true };
+        totalCell.border = xlsxThinBorder();
+      });
+      ws.columns = [
+        { width:6 }, { width:24 },
+        ...headerLabels.map(()=>({ width:9 })),
+        { width:9 },
+      ];
+      ws.views = [{ state:'frozen', xSplit:2, ySplit:1 }];
+      await downloadWorkbook(wb, filename);
+    } catch(e){
+      console.error('Lỗi xuất Excel tải trọng (ExcelJS), dùng lại cách xuất đơn giản:', e);
+      exportXlsxGeneric(['STT','Khoa/Phòng', ...headerLabels, 'Tổng'], rows.map(r=>[r.stt, r.name, ...r.counts, r.total]), filename, sheetName);
+    }
+  }
+  async function exportXlsxGeneric(headers, rows, filename, sheetName){
+    try {
+      const wb = new ExcelJS.Workbook();
+      const ws = wb.addWorksheet((sheetName||'DuLieu').slice(0,31));
+      ws.addRow(headers);
+      rows.forEach(r=> ws.addRow(r));
+      xlsxStyleSheet(ws, headers, rows);
+      await downloadWorkbook(wb, filename);
+    } catch(e){
+      console.error('Lỗi xuất Excel (ExcelJS), dùng lại cách xuất đơn giản:', e);
+      const data = [headers].concat(rows);
+      const ws2 = XLSX.utils.aoa_to_sheet(data);
+      const wb2 = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb2, ws2, sheetName || 'DuLieu');
+      XLSX.writeFile(wb2, filename);
+    }
   }
   // sheets = [{ name, headers, rows }] — mỗi phần tử thành 1 trang tính riêng trong cùng 1 file.
-  function exportXlsxMultiSheet(sheets, filename){
-    const wb = XLSX.utils.book_new();
-    sheets.forEach(sh=>{
-      const data = [sh.headers].concat(sh.rows);
-      const ws = XLSX.utils.aoa_to_sheet(data);
-      ws['!cols'] = sh.headers.map((h, i)=>{
-        let maxLen = String(h).length;
-        sh.rows.forEach(r=>{ const v = String(r[i]==null?'':r[i]); if (v.length > maxLen) maxLen = v.length; });
-        return { wch: Math.min(Math.max(maxLen + 2, 8), 40) };
+  async function exportXlsxMultiSheet(sheets, filename){
+    try {
+      const wb = new ExcelJS.Workbook();
+      sheets.forEach(sh=>{
+        const safeName = String(sh.name).replace(/[:\\\/\?\*\[\]]/g,'').slice(0,31) || 'Sheet';
+        const ws = wb.addWorksheet(safeName);
+        ws.addRow(sh.headers);
+        sh.rows.forEach(r=> ws.addRow(r));
+        xlsxStyleSheet(ws, sh.headers, sh.rows);
       });
-      // Tên sheet trong Excel giới hạn 31 ký tự, không chứa : \ / ? * [ ]
-      const safeName = String(sh.name).replace(/[:\\\/\?\*\[\]]/g,'').slice(0,31) || 'Sheet';
-      XLSX.utils.book_append_sheet(wb, ws, safeName);
-    });
-    XLSX.writeFile(wb, filename);
+      await downloadWorkbook(wb, filename);
+    } catch(e){
+      console.error('Lỗi xuất Excel (ExcelJS), dùng lại cách xuất đơn giản:', e);
+      const wb2 = XLSX.utils.book_new();
+      sheets.forEach(sh=>{
+        const data = [sh.headers].concat(sh.rows);
+        const ws2 = XLSX.utils.aoa_to_sheet(data);
+        const safeName = String(sh.name).replace(/[:\\\/\?\*\[\]]/g,'').slice(0,31) || 'Sheet';
+        XLSX.utils.book_append_sheet(wb2, ws2, safeName);
+      });
+      XLSX.writeFile(wb2, filename);
+    }
   }
   function exportCsvGeneric(headers, rows, filename){ exportXlsxGeneric(headers, rows, filename.replace(/\.csv$/,'.xlsx'), 'DuLieu'); }
 
@@ -6855,7 +7142,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           <div class="row-flex">
             <div class="field"><label>Lọc theo ngày tiếp nhận từ</label><input type="date" id="bp-f-tu" /></div>
             <div class="field"><label>đến</label><input type="date" id="bp-f-den" /></div>
-            <div class="field"><label>Chức danh</label><select id="bp-f-chucdanh"><option value="">— Tất cả —</option>${CHUC_DANH_LIST().map(c=>`<option value="${c}">${c}</option>`).join('')}</select></div>
+            <div class="field"><label>Chức danh</label><select id="bp-f-chucdanh"><option value="">— Tất cả —</option>${Array.from(new Set(candidates.map(t=>t.chucDanhDangKy).filter(Boolean))).sort((a,b)=>a.localeCompare(b)).map(c=>`<option value="${c}">${c}</option>`).join('')}</select></div>
             <button class="secondary" id="bp-f-apply" style="align-self:flex-end">🔎 Lọc</button>
           </div>
           <div class="row-flex" style="margin:6px 0">
@@ -7200,7 +7487,15 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         </div>
       `;
       const btnViewHeatmap = body.querySelector('#bp-view-heatmap');
-      if (btnViewHeatmap) btnViewHeatmap.onclick = ()=> openDraftHeatmapModal(draft);
+      if (btnViewHeatmap) btnViewHeatmap.onclick = ()=> openDraftHeatmapModal(draft, (draftIdx)=>{
+        editingSet.add(draftIdx);
+        renderStep2(specialtyWarnings);
+        setTimeout(()=>{
+          const cards = overlay.querySelectorAll('[data-draft-cb]');
+          const target = cards[draftIdx];
+          if (target) target.closest('.card').scrollIntoView({ behavior:'smooth', block:'center' });
+        }, 50);
+      });
 
       // ---- Xuất dự thảo ra Excel để chỉnh cho dễ nhìn (đổi khoa/ngày/số tháng hàng loạt bằng
       // copy-paste/kéo thả trong Excel), rồi nhập lại để áp dụng đúng vào dự thảo trong hệ thống.
@@ -7341,6 +7636,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         const toApply = draft.filter(d=>!d.excluded);
         if (!toApply.length){ alert('Không còn học viên nào được chọn để áp dụng.'); return; }
         const skippedCount = toApply.reduce((s,d)=> s + d.rows.filter(r=>!r.khoaId).length, 0);
+        // Đặt tên cho "đợt lập kế hoạch" này (VD "Đợt 1 - Bác sĩ", "Đợt 2 - Dược sĩ"...) — dùng để
+        // sau này lọc lại đúng nhóm đó trong bảng "Bản đồ tải trọng theo khoa & tháng" (Thống kê tổng
+        // quan), thay vì chỉ xem được gộp chung tất cả các đợt đã áp dụng.
+        const tenDot = prompt('Đặt tên cho đợt phân bổ này (để sau này xem lại riêng từng đợt trong bảng tải trọng) — có thể để trống nếu không cần phân biệt:', '');
+        if (tenDot === null) return; // bấm Huỷ ở hộp thoại đặt tên
+        const dotId = uid('dot');
         const confirmMsg = 'Tạo đề nghị phân công cho '+toApply.length+' học viên theo dự thảo trên?\n\nCác khoa sẽ thấy đề nghị này ở đúng link/màn hình phân công của mình như bình thường, vẫn cần khoa chọn người hướng dẫn và ký xác nhận.'
           + (skippedCount ? '\n\n⚠ '+skippedCount+' dòng chưa chọn được khoa sẽ TỰ ĐỘNG BỎ QUA (không tạo đề nghị) — anh cần vào "Phân khoa" của những người đó bổ sung tay sau.' : '');
         if (!confirm(confirmMsg)) return;
@@ -7349,7 +7650,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           if (!t) continue;
           if (!t.deNghiPhanCongList) t.deNghiPhanCongList = [];
           d.rows.filter(r=>r.khoaId).forEach(r=>{
-            t.deNghiPhanCongList.push({ id: uid('dnpc'), khoaId:r.khoaId, khoaTen:r.khoaTen, tuNgay:r.tuNgay, denNgay:r.denNgay, soThang:r.soThang, trangThai:'Chờ phân công', nguoiHuongDanId:'', nguoiHuongDan:'', nguoiKy:'', ngayKy:'', createdAt: todayISO() });
+            t.deNghiPhanCongList.push({ id: uid('dnpc'), khoaId:r.khoaId, khoaTen:r.khoaTen, tuNgay:r.tuNgay, denNgay:r.denNgay, soThang:r.soThang, trangThai:'Chờ phân công', nguoiHuongDanId:'', nguoiHuongDan:'', nguoiKy:'', ngayKy:'', createdAt: todayISO(), dotLapKeHoachId: dotId, dotLapKeHoachTen: tenDot.trim() });
           });
           await saveTrainee(t);
         }
@@ -7872,7 +8173,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     const inf = state.hvInstrFilter;
     const byUnit = computeByUnit(inf.from, inf.to);
     if (!state.hvHeatmapMonths) state.hvHeatmapMonths = 12;
-    const heatmap = computeMonthlyLoadHeatmap(state.hvHeatmapMonths, todayISO());
+    if (state.hvHeatmapDot === undefined) state.hvHeatmapDot = '';
+    const heatmap = computeMonthlyLoadHeatmap(state.hvHeatmapMonths, todayISO(), state.hvHeatmapDot);
+    const dsDotLapKeHoach = danhSachDotLapKeHoach();
     const byInstructor = computeInstructorStats(inf.from, inf.to);
     if (!state.hvInstrSearchFilter) state.hvInstrSearchFilter = { q:'', onlyActive:false, unitId:'' };
     const sf = state.hvInstrSearchFilter;
@@ -7884,6 +8187,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     });
     if (!state.hvStatsSection) state.hvStatsSection = 'tongquan';
     const sec = state.hvStatsSection;
+    // Nhớ trạng thái thu gọn/mở của từng khối qua state.statsCollapsed — mặc định MỞ (chưa từng
+    // thu gọn) trừ khi người dùng đã tự bấm thu gọn trước đó trong phiên làm việc này.
+    function isStatsOpen(id){ return !(state.statsCollapsed && state.statsCollapsed['stc-'+id]); }
+    const ALL_STC_IDS = ['filter','tongquan','chucdanh','khoa-bang','khoa-heatmap','danhsach','nguoihuongdan'];
     const SECTIONS = [
       { key:'tongquan', label:'📊 Tổng quan chung' },
       { key:'chucdanh', label:'🩺 Theo chức danh' },
@@ -7892,12 +8199,16 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       { key:'nguoihuongdan', label:'👨‍⚕️ Người hướng dẫn' },
     ];
     content.innerHTML = `
-      <div class="row-flex" style="margin-bottom:14px;flex-wrap:wrap">
+      <div class="row-flex" style="margin-bottom:6px;flex-wrap:wrap">
         ${SECTIONS.map(x=>`<button class="${sec===x.key?'':'secondary'}" data-hv-stats-section="${x.key}">${x.label}</button>`).join('')}
       </div>
+      <div class="row-flex" style="margin-bottom:14px;flex-wrap:wrap">
+        <button type="button" class="ghost small-btn" id="stc-collapse-all">🔽 Thu gọn tất cả khối</button>
+        <button type="button" class="ghost small-btn" id="stc-expand-all">🔼 Mở tất cả khối</button>
+      </div>
       <div data-section="tongquan" style="display:${sec==='tongquan'?'block':'none'}">
-      <div class="card">
-        <h3 style="font-size:15px">🔎 Bộ lọc thời gian (áp dụng cho "Số hồ sơ mới trong kỳ")</h3>
+      <details class="card" id="stc-filter" ${isStatsOpen('filter')?'open':''}>
+        <summary style="font-size:15px;font-weight:bold;cursor:pointer">🔎 Bộ lọc thời gian (áp dụng cho "Số hồ sơ mới trong kỳ")</summary>
         <div class="search-row" style="align-items:center">
           <span class="muted" style="font-family:Arial,sans-serif">Ngày tiếp nhận từ:</span>
           <input id="hs-from" type="date" value="${f.from}" style="max-width:160px" />
@@ -7908,10 +8219,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           <button class="secondary" id="hs-export-baocao" style="margin-left:auto">📝 Xuất báo cáo định kỳ (Word)</button>
         </div>
         <p class="muted" style="margin-top:6px;font-style:italic">💡 Chọn khoảng "Ngày tiếp nhận từ — đến" rồi bấm "Xuất báo cáo định kỳ" để có văn bản tổng hợp đúng thể thức hành chính, kèm số liệu + bảng biểu, phục vụ báo cáo tháng/quý/thi đua — không cần tự gõ tay số liệu.</p>
-      </div>
+      </details>
 
-      <div class="card">
-        <h3 style="font-size:15px">📊 Thống kê tổng quan học viên</h3>
+      <details class="card" id="stc-tongquan" ${isStatsOpen('tongquan')?'open':''}>
+        <summary style="font-size:15px;font-weight:bold;cursor:pointer">📊 Thống kê tổng quan học viên</summary>
         <p class="muted" style="margin-top:-6px;font-style:italic">💡 Bấm vào một thẻ để xem ngay danh sách học viên tương ứng.</p>
         <div class="stat-grid">
           <div class="stat" data-stat="tongHoSo" style="cursor:pointer" title="Xem tất cả học viên"><div class="num">${s.tongHoSo}</div><div class="lbl">Tổng số hồ sơ tiếp nhận</div></div>
@@ -7926,12 +8237,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           <div class="stat amber" data-stat="sapKetThuc" style="cursor:pointer" title="Xem học viên sắp kết thúc trong 30 ngày tới"><div class="num">${s.sapKetThuc}</div><div class="lbl">Học viên sắp kết thúc (≤30 ngày)</div></div>
           <div class="stat red" data-stat="quaHan" style="cursor:pointer" title="Xem học viên đã quá thời hạn dự kiến kết thúc"><div class="num">${s.quaHan}</div><div class="lbl">Học viên quá thời hạn dự kiến</div></div>
         </div>
-      </div>
+      </details>
       </div>
 
       <div data-section="chucdanh" style="display:${sec==='chucdanh'?'block':'none'}">
-      <div class="card">
-        <h3 style="font-size:15px">Thống kê theo chức danh đăng ký</h3>
+      <details class="card" id="stc-chucdanh" ${isStatsOpen('chucdanh')?'open':''}>
+        <summary style="font-size:15px;font-weight:bold;cursor:pointer">Thống kê theo chức danh đăng ký</summary>
         <div class="row-flex" style="margin-bottom:10px">
           <button class="secondary" id="bk-export-excel">📊 Xuất Excel</button>
           <button class="secondary" id="bk-export-word">🖨️ Xuất Word</button>
@@ -7940,12 +8251,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           <thead><tr><th>STT</th><th>Chức danh</th><th>Số học viên</th></tr></thead>
           <tbody>${byChucDanh.map(([k,v],i)=>`<tr><td style="text-align:center">${i+1}</td><td>${k}</td><td>${v}</td></tr>`).join('') || '<tr><td colspan="3" style="text-align:center">Chưa có dữ liệu.</td></tr>'}</tbody>
         </table>
-      </div>
+      </details>
       </div>
 
       <div data-section="khoa" style="display:${sec==='khoa'?'block':'none'}">
-      <div class="card">
-        <h3 style="font-size:15px">Thống kê theo khoa/phòng đang nhận học viên &amp; người hướng dẫn</h3>
+      <details class="card" id="stc-khoa-bang" ${isStatsOpen('khoa-bang')?'open':''}>
+        <summary style="font-size:15px;font-weight:bold;cursor:pointer">Thống kê theo khoa/phòng đang nhận học viên &amp; người hướng dẫn</summary>
         <p class="muted" style="margin-top:-6px">Giúp tránh tình trạng một khoa quá tải trong khi khoa khác còn khả năng tiếp nhận. Cột "Đang hướng dẫn" tính theo khoảng ngày đã lọc dưới đây — để xem tại 1 thời điểm, nhập cùng 1 ngày cho cả "Từ ngày" và "Đến ngày".</p>
         <div class="search-row" style="align-items:center;margin-bottom:10px">
           <span class="muted" style="font-family:Arial,sans-serif">Từ ngày:</span>
@@ -7976,16 +8287,21 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             </tr>`).join('') || '<tr><td colspan="9" style="text-align:center">Chưa có khoa/phòng nào đang nhận học viên.</td></tr>'}</tbody>
         </table>
         </div>
-      </div>
-      <div class="card">
-        <h3 style="font-size:15px">🌡️ Bản đồ tải trọng theo khoa &amp; tháng (${heatmap.months.length} tháng tới, kể từ tháng hiện tại)</h3>
-        <p class="muted" style="margin-top:-6px">Mỗi ô là <b>số học viên đang thực hành</b> tại khoa đó trong tháng đó (đếm theo giai đoạn đã lưu/đã phân công, kể cả lộ trình dự kiến trong tương lai). Màu càng đậm = khoa càng đông trong tháng đó — dùng để phát hiện sớm tháng/khoa bị dồn quá tải hoặc quá vắng, từ đó điều chỉnh lại lộ trình luân khoa cho hợp lý hơn, tránh khiếu nại giữa các khoa.</p>
-        <div class="row-flex" style="margin-bottom:10px">
+      </details>
+      <details class="card" id="stc-khoa-heatmap" ${isStatsOpen('khoa-heatmap')?'open':''}>
+        <summary style="font-size:15px;font-weight:bold;cursor:pointer">🌡️ Bản đồ tải trọng theo khoa &amp; tháng (${heatmap.months.length} tháng tới, kể từ tháng hiện tại)</summary>
+        <p class="muted" style="margin-top:-6px">Mỗi ô là <b>số học viên đang thực hành</b> tại khoa đó trong tháng đó (đếm theo giai đoạn đã lưu/đã phân công, kể cả lộ trình dự kiến trong tương lai). Màu càng đậm = khoa càng đông trong tháng đó — dùng để phát hiện sớm tháng/khoa bị dồn quá tải hoặc quá vắng, từ đó điều chỉnh lại lộ trình luân khoa cho hợp lý hơn, tránh khiếu nại giữa các khoa.${!dsDotLapKeHoach.length ? ' <i>(Chưa có đợt nào được đặt tên — vào "Lập kế hoạch phân bổ hàng loạt", khi bấm Áp dụng sẽ được hỏi đặt tên đợt để lọc lại ở đây.)</i>' : ''}</p>
+        <div class="row-flex" style="margin-bottom:10px;flex-wrap:wrap">
           <span class="muted">Xem trong:</span>
           <select id="hm-months">
             <option value="6" ${state.hvHeatmapMonths===6?'selected':''}>6 tháng tới</option>
             <option value="12" ${state.hvHeatmapMonths===12?'selected':''}>12 tháng tới</option>
             <option value="18" ${state.hvHeatmapMonths===18?'selected':''}>18 tháng tới</option>
+          </select>
+          <span class="muted">Đợt lập kế hoạch:</span>
+          <select id="hm-dot">
+            <option value="">— Tất cả các đợt (gộp chung) —</option>
+            ${dsDotLapKeHoach.map(d=>`<option value="${d.id}" ${state.hvHeatmapDot===d.id?'selected':''}>${d.ten} (${d.count} học viên)</option>`).join('')}
           </select>
           <button class="secondary" id="hm-export-excel">📊 Xuất Excel (bảng khoa × tháng)</button>
           <button class="secondary" id="hm-export-matrix">📋 Xuất Excel (học viên × khoa, mỗi tháng 1 trang)</button>
@@ -7993,9 +8309,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         ${heatmap.rows.length ? `
         <div class="scroll-table-wrap">
         <table style="table-layout:fixed;font-size:12.5px">
-          <thead><tr><th style="width:160px;text-align:left">Khoa/Phòng</th>${heatmap.months.map(m=>`<th style="width:52px;text-align:center">${m.label}</th>`).join('')}<th style="width:60px">Tổng</th></tr></thead>
-          <tbody>${heatmap.rows.map(r=>`
+          <thead><tr><th style="width:36px">STT</th><th style="width:160px;text-align:left">Khoa/Phòng</th>${heatmap.months.map(m=>`<th style="width:52px;text-align:center">${m.label}</th>`).join('')}<th style="width:60px">Tổng</th></tr></thead>
+          <tbody>${heatmap.rows.map((r,i)=>`
             <tr>
+              <td style="text-align:center;color:#888">${i+1}</td>
               <td>${r.name}</td>
               ${r.counts.map(n=>{
                 let bg = '#fff', color = '#999';
@@ -8011,12 +8328,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         </div>
         <p class="muted" style="margin-top:8px;font-size:12px">🟩 1–2 học viên &nbsp; 🟨 3–4 &nbsp; 🟧 5–6 &nbsp; 🟥 ≥7 (khoa cần lưu ý ưu tiên giãn bớt qua khoa khác/tháng khác).</p>
         ` : '<p class="muted">Chưa có dữ liệu giai đoạn thực hành nào trong khoảng thời gian này.</p>'}
-      </div>
+      </details>
       </div>
 
       <div data-section="danhsach" style="display:${sec==='danhsach'?'block':'none'}">
-      <div class="card">
-        <h3 style="font-size:15px">📋 Danh sách chi tiết học viên đang thực hành (theo khoảng ngày đã lọc)</h3>
+      <details class="card" id="stc-danhsach" ${isStatsOpen('danhsach')?'open':''}>
+        <summary style="font-size:15px;font-weight:bold;cursor:pointer">📋 Danh sách chi tiết học viên đang thực hành (theo khoảng ngày đã lọc)</summary>
         <p class="muted" style="margin-top:-6px">Danh sách trực quan từng học viên, khoa thực hành và người hướng dẫn tại thời điểm/khoảng ngày đã chọn — nhập cùng 1 ngày để xem tại 1 thời điểm, hoặc 2 ngày khác nhau để xem cả quá khứ.</p>
         <div class="search-row" style="align-items:center;margin-bottom:10px">
           <span class="muted" style="font-family:Arial,sans-serif">Từ ngày:</span>
@@ -8032,12 +8349,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           <button class="secondary" id="al-export-word">🖨️ Xuất Word (danh sách học viên)</button>
         </div>
         <div id="al-result-wrap"></div>
-      </div>
+      </details>
       </div>
 
       <div data-section="nguoihuongdan" style="display:${sec==='nguoihuongdan'?'block':'none'}">
-      <div class="card">
-        <h3 style="font-size:15px">Thống kê chi tiết người hướng dẫn</h3>
+      <details class="card" id="stc-nguoihuongdan" ${isStatsOpen('nguoihuongdan')?'open':''}>
+        <summary style="font-size:15px;font-weight:bold;cursor:pointer">Thống kê chi tiết người hướng dẫn</summary>
         <div class="search-row" style="align-items:center;margin-bottom:10px">
           <span class="muted" style="font-family:Arial,sans-serif">Từ ngày:</span>
           <input id="inf3-from" type="date" value="${inf.from}" style="max-width:160px" />
@@ -8055,9 +8372,27 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           <button id="instr-search-apply">🔎 Lọc</button>
         </div>
         <div id="instr-result-wrap"></div>
-      </div>
+      </details>
       </div>
     `;
+    content.querySelectorAll('details.card[id^="stc-"]').forEach(d=>{
+      d.addEventListener('toggle', ()=>{
+        if (!state.statsCollapsed) state.statsCollapsed = {};
+        state.statsCollapsed[d.id] = !d.open;
+      });
+    });
+    const btnCollapseAll = content.querySelector('#stc-collapse-all');
+    if (btnCollapseAll) btnCollapseAll.onclick = ()=>{
+      if (!state.statsCollapsed) state.statsCollapsed = {};
+      ALL_STC_IDS.forEach(id=>{ state.statsCollapsed['stc-'+id] = true; });
+      renderTraineeStatsView(content);
+    };
+    const btnExpandAll = content.querySelector('#stc-expand-all');
+    if (btnExpandAll) btnExpandAll.onclick = ()=>{
+      if (!state.statsCollapsed) state.statsCollapsed = {};
+      ALL_STC_IDS.forEach(id=>{ state.statsCollapsed['stc-'+id] = false; });
+      renderTraineeStatsView(content);
+    };
     content.querySelectorAll('[data-hv-stats-section]').forEach(b=>{
       b.onclick = ()=>{ state.hvStatsSection = b.getAttribute('data-hv-stats-section'); renderTraineeStatsView(content); };
     });
@@ -8259,11 +8594,13 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     };
     const hmMonthsSelect = document.getElementById('hm-months');
     if (hmMonthsSelect) hmMonthsSelect.onchange = (e)=>{ state.hvHeatmapMonths = parseInt(e.target.value,10); renderTraineeStatsView(content); };
+    const hmDotSelect = document.getElementById('hm-dot');
+    if (hmDotSelect) hmDotSelect.onchange = (e)=>{ state.hvHeatmapDot = e.target.value; renderTraineeStatsView(content); };
     const hmExportBtn = document.getElementById('hm-export-excel');
     if (hmExportBtn) hmExportBtn.onclick = ()=>{
-      exportXlsxGeneric(
-        ['Khoa/Phòng', ...heatmap.months.map(m=>m.label), 'Tổng'],
-        heatmap.rows.map(r=>[r.name, ...r.counts, r.total]),
+      exportHeatmapXlsx(
+        heatmap.months.map(m=>m.label),
+        heatmap.rows.map((r,i)=>({ stt:i+1, name:r.name, counts:r.counts, total:r.total })),
         'ban_do_tai_trong_theo_khoa_thang_'+todayISO()+'.xlsx',
         'TaiTrong'
       );
@@ -10876,11 +11213,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       const wrap = document.getElementById('units-table-wrap');
       wrap.innerHTML = `
         <table>
-          <thead><tr><th>STT</th><th>Tên đơn vị</th><th>Mã PIN</th><th>Số nhân viên</th><th></th></tr></thead>
+          <thead><tr><th>STT</th><th>Tên đơn vị</th><th>Mã PIN</th><th>Phân loại</th><th>Số nhân viên</th><th></th></tr></thead>
           <tbody>${units.map((u,i)=>`
-            <tr><td>${i+1}</td><td>${u.name}</td><td>${u.pin}</td><td>${state.employees.filter(e=>e.donViId===u.id).length}</td>
+            <tr><td>${i+1}</td><td>${u.name}</td><td>${u.pin}</td><td>${loaiKhoaOf(u)}${!u.loai?' <span class="muted" style="font-size:11px">(tự đoán)</span>':''}</td><td>${state.employees.filter(e=>e.donViId===u.id).length}</td>
             <td><button class="ghost small-btn" data-edit-unit="${u.id}">✏️ Sửa</button> <button class="ghost small-btn" data-del-unit="${u.id}">🗑️ Xoá</button></td></tr>
-          `).join('') || `<tr><td colspan="5" style="text-align:center">Không có đơn vị phù hợp.</td></tr>`}</tbody>
+          `).join('') || `<tr><td colspan="6" style="text-align:center">Không có đơn vị phù hợp.</td></tr>`}</tbody>
         </table>
       `;
       wrap.querySelectorAll('[data-edit-unit]').forEach(b=>{
@@ -10927,6 +11264,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       <h3>Sửa thông tin đơn vị</h3>
       <div class="field"><label>Tên Khoa / Phòng</label><input id="eu-name" value="${u.name}" /></div>
       <div class="field"><label>Mã PIN</label><input id="eu-pin" value="${u.pin}" /></div>
+      <div class="field"><label>Phân loại (dùng để lọc trong các bảng thống kê/tải trọng theo khoa)</label>
+        <select id="eu-loai">${LOAI_KHOA_OPTIONS.map(o=>`<option value="${o}" ${loaiKhoaOf(u)===o?'selected':''}>${o}</option>`).join('')}</select>
+      </div>
       <div class="row-flex" style="justify-content:flex-end;margin-top:10px">
         <button class="secondary" id="eu-cancel">Hủy</button>
         <button id="eu-save">Lưu</button>
@@ -10937,8 +11277,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     overlay.querySelector('#eu-save').onclick = async ()=>{
       const name = overlay.querySelector('#eu-name').value.trim();
       const pin = overlay.querySelector('#eu-pin').value.trim();
+      const loai = overlay.querySelector('#eu-loai').value;
       if (!name || !pin){ alert('Vui lòng nhập đầy đủ.'); return; }
-      u.name = name; u.pin = pin;
+      u.name = name; u.pin = pin; u.loai = loai;
       await saveConfig();
       overlay.remove();
       renderAdminApp();
