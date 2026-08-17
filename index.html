@@ -595,19 +595,30 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     return y + '-' + m + '-' + day;
   }
   function todayISO(){ return toLocalISODate(new Date()); }
-  function addYears(iso, years){ const d = new Date(iso); d.setFullYear(d.getFullYear()+years); return toLocalISODate(d); }
-  function monthsBetween(a,b){ const d1=new Date(a), d2=new Date(b); return (d2.getFullYear()-d1.getFullYear())*12 + (d2.getMonth()-d1.getMonth()); }
+  function addYears(iso, years){ const d = new Date(iso + 'T00:00:00'); d.setFullYear(d.getFullYear()+years); return toLocalISODate(d); }
+  function monthsBetween(a,b){ const d1=new Date(a+'T00:00:00'), d2=new Date(b+'T00:00:00'); return (d2.getFullYear()-d1.getFullYear())*12 + (d2.getMonth()-d1.getMonth()); }
   function monthsDecimal(fromIso, toIso){
     if (!fromIso || !toIso) return 0;
-    const d1 = new Date(fromIso), d2 = new Date(toIso);
+    const d1 = new Date(fromIso + 'T00:00:00'), d2 = new Date(toIso + 'T00:00:00');
     const diffDays = Math.round((d2 - d1) / 86400000) + 1;
     if (diffDays <= 0) return 0;
     return Math.round((diffDays / 30) * 10) / 10;
   }
   function nextDayISO(iso){
     if (!iso) return '';
-    const d = new Date(iso);
+    // ⚠ Sửa lỗi: trước đây thiếu "T00:00:00" khi parse ngày, khiến trình duyệt hiểu chuỗi
+    // "2026-08-17" là mốc giờ UTC 00:00 thay vì giờ ĐỊA PHƯƠNG 00:00 — với múi giờ Việt Nam
+    // (UTC+7) thường không lệch ngày, nhưng nếu máy/trình duyệt đặt múi giờ khác (VD mở file
+    // trên máy đặt giờ UTC hoặc múi giờ âm) có thể bị lùi mất 1 ngày khi tính "Đến ngày" của
+    // dòng trước → "Từ ngày" dòng sau, làm ngày bắt đầu các khoa kế tiếp bị dồn/lệch không đều.
+    const d = new Date(iso + 'T00:00:00');
     d.setDate(d.getDate() + 1);
+    return toLocalISODate(d);
+  }
+  function addDaysISO(iso, days){
+    if (!iso) return iso;
+    const d = new Date(iso + 'T00:00:00');
+    d.setDate(d.getDate() + (days||0));
     return toLocalISODate(d);
   }
   // Chiều ngược của monthsDecimal: từ "Từ ngày" + số tháng → ra "Đến ngày" tương ứng
@@ -3874,6 +3885,30 @@ https://github.com/nodeca/pako/blob/main/LICENSE
   // phân bổ học viên qua các khoa theo thời gian, phát hiện sớm tháng/khoa nào bị dồn quá đông
   // (dễ phát sinh khiếu nại) hoặc quá vắng (chưa tận dụng hết năng lực đào tạo), để điều chỉnh lộ
   // trình luân khoa cho hợp lý hơn TRƯỚC khi áp dụng chính thức.
+  //
+  // Nguyên tắc đếm: với MỖI học viên và MỖI tháng, chỉ tính đúng 1 khoa duy nhất — là khoa mà họ
+  // Ở NHIỀU NGÀY NHẤT trong tháng đó (không phải "có giao với tháng" — dễ đếm trùng khi đổi khoa
+  // giữa tháng — cũng không phải "đúng 1 ngày cố định như 15" — dễ bỏ sót tháng đầu nếu cả nhóm bắt
+  // đầu sau ngày đó). Cách này đảm bảo mỗi học viên luôn được tính đúng 1 lần/tháng, không thiếu
+  // không thừa, kể cả tháng đầu tiên khi ngày bắt đầu không phải mùng 1.
+  function soNgayGiaoNhau(fromA, toA, fromB, toB){
+    const f = fromA > fromB ? fromA : fromB;
+    const t = toA < toB ? toA : toB;
+    if (f > t) return 0;
+    return Math.round((new Date(t+'T00:00:00') - new Date(f+'T00:00:00')) / 86400000) + 1;
+  }
+  // rows: mảng { khoaId, tuNgay, denNgay } của 1 học viên. mo: { from, to } của 1 tháng.
+  // Trả về khoaId chiếm nhiều ngày nhất trong tháng đó, hoặc null nếu không có ngày nào giao nhau.
+  function khoaChiemUuTheTrongThang(rows, mo){
+    let best = null, bestDays = 0;
+    (rows||[]).forEach(r=>{
+      if (!r.khoaId) return;
+      const f = r.tuNgay || '0000-01-01', t = r.denNgay || '9999-12-31';
+      const days = soNgayGiaoNhau(f, t, mo.from, mo.to);
+      if (days > bestDays){ bestDays = days; best = r.khoaId; }
+    });
+    return best;
+  }
   function computeMonthlyLoadHeatmap(monthsCount, startIso, dotId){
     monthsCount = monthsCount || 12;
     // CHỈ lấy khoa Lâm sàng + Cận lâm sàng — loại bỏ Phòng chức năng (không trực tiếp nhận học viên
@@ -3893,21 +3928,20 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       const to = y+'-'+String(m).padStart(2,'0')+'-'+String(lastDay).padStart(2,'0');
       months.push({ label:'T'+m+'/'+String(y).slice(2), from, to });
     }
-    const rows = units.map(u=>{
-      const counts = months.map(mo=>{
-        let n = 0;
-        (state.trainees||[]).forEach(t=>{
-          (t.giaiDoan||[]).forEach(s=>{
-            if (s.khoaId !== u.id) return;
-            // Lọc theo "đợt lập kế hoạch" nếu có chọn — dotId='' nghĩa là xem TẤT CẢ các đợt gộp lại.
-            if (dotId && s.dotLapKeHoachId !== dotId) return;
-            const sFrom = s.tuNgay || '0000-01-01';
-            const sTo = s.denNgay || '9999-12-31';
-            if (sFrom <= mo.to && sTo >= mo.from) n++;
-          });
-        });
-        return n;
+    // Với mỗi học viên, xác định trước khoa "chiếm ưu thế" (nhiều ngày nhất) của TỪNG tháng — 1 lần
+    // duy nhất — rồi mới đếm dồn theo khoa, để đảm bảo mỗi học viên chỉ góp 1 lần cho mỗi tháng dù
+    // họ có bao nhiêu đợt/giai đoạn trong hệ thống.
+    const attribution = []; // { khoaId, monthIdx }
+    (state.trainees||[]).forEach(t=>{
+      const segs = (t.giaiDoan||[]).filter(s=> !dotId || s.dotLapKeHoachId===dotId);
+      if (!segs.length) return;
+      months.forEach((mo, mIdx)=>{
+        const khoaId = khoaChiemUuTheTrongThang(segs, mo);
+        if (khoaId) attribution.push({ khoaId, mIdx });
       });
+    });
+    const rows = units.map(u=>{
+      const counts = months.map((mo,mIdx)=> attribution.filter(a=>a.khoaId===u.id && a.mIdx===mIdx).length);
       return { unitId:u.id, name:u.name, counts, max: Math.max(0,...counts), total: counts.reduce((a,b)=>a+b,0) };
     }); // Không lọc bỏ khoa có total=0 nữa — để thấy được cả khoa CHƯA có học viên nào trong 12 tháng
         // (giúp Trưởng phòng CĐT nhận ra khoa nào đang trống để cân đối, đúng như bảng dự thảo).
@@ -3929,7 +3963,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
   // ---- Xem trước tải trọng của MỘT DỰ THẢO (chưa lưu vào hệ thống) trong "Lập kế hoạch phân bổ
   // hàng loạt" — cộng dồn với tải ĐÃ CÓ SẴN trong hệ thống để thấy đúng bức tranh thật sau khi áp
   // dụng, giúp phát hiện khoa bị dồn quá tải NGAY TRƯỚC KHI bấm "Áp dụng chính thức". ----
-  function openDraftHeatmapModal(draft, onEditTrainee){
+  function openDraftHeatmapModal(draft, onEditTrainee, onDraftChanged){
     const activeDraft = (draft||[]).map((d,idx)=>({...d, _idx:idx})).filter(d=>!d.excluded);
     if (!activeDraft.length){ alert('Không có học viên nào (chưa bị bỏ tick) trong dự thảo để xem.'); return; }
     const starts = activeDraft.flatMap(d=>d.rows.map(r=>r.tuNgay)).filter(Boolean).sort();
@@ -3951,40 +3985,49 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       const to = y+'-'+String(m).padStart(2,'0')+'-'+String(lastDay).padStart(2,'0');
       months.push({ label:'T'+m+'/'+String(y).slice(2), from, to });
     }
-    function existingCount(khoaId, mo){
-      let n = 0;
-      (state.trainees||[]).forEach(t=>{
-        (t.giaiDoan||[]).forEach(s=>{
-          if (s.khoaId !== khoaId) return;
-          const f = s.tuNgay || '0000-01-01', to = s.denNgay || '9999-12-31';
-          if (f <= mo.to && to >= mo.from) n++;
-        });
+    // Với mỗi học viên (thật + dự thảo), xác định trước khoa "chiếm ưu thế" (nhiều ngày nhất) của
+    // TỪNG tháng — đảm bảo mỗi học viên chỉ góp 1 lần cho mỗi tháng, không thiếu không thừa, kể cả
+    // tháng đầu tiên khi ngày bắt đầu không phải mùng 1 (VD bắt đầu 17/8 vẫn được tính đúng ở T8).
+    const existingAttribution = []; // { khoaId, mIdx }
+    (state.trainees||[]).forEach(t=>{
+      if (!(t.giaiDoan||[]).length) return;
+      months.forEach((mo,mIdx)=>{
+        const khoaId = khoaChiemUuTheTrongThang(t.giaiDoan, mo);
+        if (khoaId) existingAttribution.push({ khoaId, mIdx });
       });
-      return n;
+    });
+    const draftAttribution = []; // { draftIdx, rowIdx, khoaId, mIdx }
+    activeDraft.forEach(d=>{
+      months.forEach((mo,mIdx)=>{
+        let bestRowIdx = -1, bestKhoaId = null, bestDays = 0;
+        (d.rows||[]).forEach((r,rIdx)=>{
+          if (!r.khoaId) return;
+          const days = soNgayGiaoNhau(r.tuNgay||'0000-01-01', r.denNgay||'9999-12-31', mo.from, mo.to);
+          if (days > bestDays){ bestDays = days; bestKhoaId = r.khoaId; bestRowIdx = rIdx; }
+        });
+        if (bestKhoaId) draftAttribution.push({ draftIdx:d._idx, rowIdx:bestRowIdx, khoaId:bestKhoaId, mIdx });
+      });
+    });
+    function existingCount(khoaId, mo){
+      const mIdx = months.indexOf(mo);
+      return existingAttribution.filter(a=>a.khoaId===khoaId && a.mIdx===mIdx).length;
     }
     function draftCount(khoaId, mo){
-      let n = 0;
-      activeDraft.forEach(d=> d.rows.forEach(r=>{
-        if (r.khoaId !== khoaId) return;
-        const f = r.tuNgay || '0000-01-01', to = r.denNgay || '9999-12-31';
-        if (f <= mo.to && to >= mo.from) n++;
-      }));
-      return n;
+      const mIdx = months.indexOf(mo);
+      return draftAttribution.filter(a=>a.khoaId===khoaId && a.mIdx===mIdx).length;
     }
     // Danh sách học viên trong dự thảo (kèm _idx = vị trí gốc trong mảng draft, dùng để mở đúng
     // form "✏️ Sửa" của người đó ở Bước 2) đang chiếm chỗ tại 1 khoa + 1 tháng cụ thể — dùng khi
     // bấm vào ô "dự thảo thêm" trên bản đồ tải trọng để biết ngay ai đang gây quá tải và sửa luôn.
     function draftStudentsAt(khoaId, mo){
-      const out = [];
-      activeDraft.forEach(d=>{
-        const hit = d.rows.some(r=>{
-          if (r.khoaId !== khoaId) return false;
-          const f = r.tuNgay || '0000-01-01', to = r.denNgay || '9999-12-31';
-          return f <= mo.to && to >= mo.from;
-        });
-        if (hit) out.push({ idx:d._idx, hoTen:d.hoTen });
-      });
-      return out;
+      const mIdx = months.indexOf(mo);
+      return draftAttribution
+        .filter(a=>a.khoaId===khoaId && a.mIdx===mIdx)
+        .map(a=>{
+          const d = activeDraft.find(x=>x._idx===a.draftIdx);
+          return d ? { idx:a.draftIdx, hoTen:d.hoTen, rowIdx:a.rowIdx } : null;
+        })
+        .filter(Boolean);
     }
     // Chỉ lấy khoa Lâm sàng + Cận lâm sàng (loại bỏ Phòng chức năng — không trực tiếp nhận học viên
     // thực hành) để bảng gọn và đúng đối tượng, nhưng vẫn lấy TOÀN BỘ khoa lâm sàng/cận lâm sàng
@@ -4003,17 +4046,19 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       const total = months.map((mo,idx)=> existing[idx]+added[idx]);
       return { khoaId, name, existing, added, total };
     }).sort((a,b)=> a.name.localeCompare(b.name,'vi'));
-    const overlay = el(`<div class="modal-overlay"><div class="modal" style="max-width:96vw;width:96vw;max-height:92vh;display:flex;flex-direction:column">
+    let dhZoomed = false;
+    const overlay = el(`<div class="modal-overlay"><div class="modal" id="dh-modal" style="max-width:96vw;width:96vw;max-height:92vh;display:flex;flex-direction:column">
       <div class="row-flex" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <h3 style="margin:0">🌡️ Tải trọng dự thảo này theo khoa &amp; tháng (${activeDraft.length} học viên)</h3>
         <div class="row-flex" style="gap:6px">
+          <button type="button" class="secondary" id="dh-zoom" title="Phóng to chữ và ô trong bảng cho dễ đọc">🔍+ Phóng to bảng</button>
           <button type="button" class="secondary" id="dh-export-excel">📊 Xuất Excel</button>
           <button type="button" id="dh-close">Đóng</button>
         </div>
       </div>
       <p class="muted" style="margin-top:-4px">Mỗi ô hiển thị dạng <b>"đã có + dự thảo này = tổng"</b>. "Đã có" là số học viên đang thực hành thật sự tại khoa đó trong hệ thống (chưa tính dự thảo). "Dự thảo này" là số học viên SẼ được thêm vào nếu bấm "Áp dụng". Màu ô tính theo TỔNG — nếu thấy ô đỏ, nên quay lại chỉnh lộ trình hoặc ngày bắt đầu trước khi áp dụng. ${onEditTrainee ? '<b>Bấm vào 1 ô có số</b> để xem đúng những học viên nào trong dự thảo đang chiếm chỗ ở khoa/tháng đó, và sửa nhanh khoa cho họ.' : ''}</p>
       <div style="overflow:auto;flex:1">
-      <table style="table-layout:fixed;font-size:12px">
+      <table id="dh-table" style="table-layout:fixed;font-size:12px">
         <thead><tr><th style="width:40px;text-align:center;position:sticky;top:0;left:0;z-index:3;background:#1f7a4d">STT</th><th style="width:170px;text-align:left;position:sticky;top:0;left:40px;z-index:3;background:#1f7a4d">Khoa/Phòng</th>${months.map(m=>`<th style="width:78px;text-align:center;position:sticky;top:0;z-index:2;background:#1f7a4d">${m.label}</th>`).join('')}<th style="width:70px;text-align:center;position:sticky;top:0;z-index:2;background:#1f7a4d">Tổng</th></tr></thead>
         <tbody>${rows.map((r,idx0)=>{
           const tongExisting = r.existing.reduce((a,b)=>a+b,0);
@@ -4037,46 +4082,95 @@ https://github.com/nodeca/pako/blob/main/LICENSE
               '</td>';
             }).join('')}
             <td style="text-align:center;font-weight:bold;background:#eef6ff">${tongExisting}${tongAdded>0?' <b>+'+tongAdded+'</b>':''} = ${tongAll}</td>
-          </tr>`;}).join('')}</tbody>
+          </tr>`;}).join('')}
+        ${(()=>{
+          // Dòng "Tổng cộng theo tháng" — để kiểm tra nhanh: cộng dồn TẤT CẢ khoa ở mỗi tháng phải
+          // luôn xấp xỉ đúng tổng số học viên trong dự thảo (không phải cứ tăng dần hay tụt bất
+          // thường) — nếu lệch nhiều so với số học viên, cần xem lại lộ trình mẫu/ngày bắt đầu.
+          const sumExisting = months.map((mo,idx)=> rows.reduce((s,r)=> s + r.existing[idx], 0));
+          const sumAdded = months.map((mo,idx)=> rows.reduce((s,r)=> s + r.added[idx], 0));
+          const sumTotal = months.map((mo,idx)=> sumExisting[idx] + sumAdded[idx]);
+          const grandExisting = sumExisting.reduce((a,b)=>a+b,0);
+          const grandAdded = sumAdded.reduce((a,b)=>a+b,0);
+          return `
+          <tr style="background:#fff7e0;font-weight:bold;border-top:2px solid #d8a800">
+            <td style="position:sticky;left:0;z-index:1;background:#fff7e0"></td>
+            <td style="position:sticky;left:40px;z-index:1;background:#fff7e0">📊 Tổng cộng theo tháng</td>
+            ${sumTotal.map((n,idx)=>`<td style="text-align:center">${sumExisting[idx]}${sumAdded[idx]>0?' +'+sumAdded[idx]:''} = ${n}</td>`).join('')}
+            <td style="text-align:center;background:#ffe9a8">${grandExisting}${grandAdded>0?' +'+grandAdded:''} = ${grandExisting+grandAdded}</td>
+          </tr>`;
+        })()}
+        </tbody>
       </table>
       </div>
+      <p class="muted" style="margin-top:4px;font-size:12px">💡 Dòng "Tổng cộng theo tháng" nên xấp xỉ đúng ${activeDraft.length} (số học viên trong dự thảo) ở mỗi tháng — nếu 1 tháng nào đó thấp hơn hẳn hoặc cao hơn hẳn số này, có thể có học viên đang bị hở lịch hoặc dồn quá nhiều dòng vào cùng lúc, nên kiểm tra lại lộ trình của những người liên quan.</p>
       <p class="muted" style="margin-top:8px;font-size:12px">🟩 1–2 học viên &nbsp; 🟨 3–4 &nbsp; 🟧 5–6 &nbsp; 🟥 ≥7 (nên cân nhắc giãn bớt).</p>
     </div></div>`);
     root.appendChild(overlay);
     overlay.querySelector('#dh-close').onclick = ()=> overlay.remove();
+    overlay.querySelector('#dh-zoom').onclick = ()=>{
+      dhZoomed = !dhZoomed;
+      const tbl = overlay.querySelector('#dh-table');
+      tbl.style.fontSize = dhZoomed ? '16px' : '12px';
+      tbl.querySelectorAll('th, td').forEach(cell=>{ cell.style.padding = dhZoomed ? '10px 12px' : ''; });
+      overlay.querySelector('#dh-zoom').textContent = dhZoomed ? '🔍- Thu nhỏ bảng' : '🔍+ Phóng to bảng';
+    };
     if (onEditTrainee){
+      const unitOptionsPop = (state.config.units||[]).slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+      function openCellPopup(khoaId, moIdx){
+        const mo = months[+moIdx];
+        const u = (state.config.units||[]).find(x=>x.id===khoaId);
+        const students = draftStudentsAt(khoaId, mo);
+        if (!students.length) return;
+        const pop = el(`<div class="modal-overlay" style="z-index:10000"><div class="modal" style="max-width:760px;width:92vw">
+          <h3 style="margin-top:0">${u?u.name:''} — ${mo.label}</h3>
+          <p class="muted" style="margin-top:-6px">${students.length} học viên trong dự thảo đang chiếm chỗ ở đây. <b>Đổi khoa ngay tại đây</b> cho từng người (chỉ đổi đúng tháng này, các tháng khác của họ giữ nguyên) — không cần mở cả lộ trình dài.</p>
+          <div style="max-height:340px;overflow:auto">
+            ${students.map(s=>`
+              <div class="row-flex" style="justify-content:space-between;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--line);flex-wrap:nowrap">
+                <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${s.hoTen}">${s.hoTen}</span>
+                <select data-heat-quickchange="${s.idx}::${s.rowIdx}" style="max-width:260px;flex-shrink:0">${unitOptionsPop.map(uo=>`<option value="${uo.id}" ${uo.id===khoaId?'selected':''}>${uo.name}</option>`).join('')}</select>
+                <button type="button" class="ghost small-btn" data-heat-edit="${s.idx}" data-heat-edit-row="${s.rowIdx}" style="white-space:nowrap;flex-shrink:0" title="Mở lộ trình cả năm của riêng người này nếu cần sửa thêm ngày/số tháng">✏️ Sửa cả lộ trình người này</button>
+              </div>
+            `).join('')}
+          </div>
+          <div class="row-flex" style="justify-content:flex-end;margin-top:10px">
+            <button type="button" id="heat-pop-close">Đóng</button>
+          </div>
+        </div></div>`);
+        root.appendChild(pop);
+        pop.querySelector('#heat-pop-close').onclick = ()=> pop.remove();
+        pop.querySelectorAll('[data-heat-quickchange]').forEach(sel=>{
+          sel.onchange = ()=>{
+            const [dIdxStr, rIdxStr] = sel.getAttribute('data-heat-quickchange').split('::');
+            const dIdx = +dIdxStr, rIdx = +rIdxStr;
+            const newU = (state.config.units||[]).find(x=>x.id===sel.value);
+            if (!newU || !draft[dIdx] || !draft[dIdx].rows[rIdx]) return;
+            draft[dIdx].rows[rIdx].khoaId = newU.id;
+            draft[dIdx].rows[rIdx].khoaTen = newU.name;
+            showToast('Đã đổi khoa tháng '+mo.label+' của "'+draft[dIdx].hoTen+'" sang "'+newU.name+'".');
+            // Vẽ lại toàn bộ bảng tải trọng + đóng popup hiện tại, để số liệu (và các ô màu) cập
+            // nhật đúng ngay lập tức — người dùng có thể bấm tiếp ô khác để xử lý tiếp.
+            pop.remove();
+            overlay.remove();
+            openDraftHeatmapModal(draft, onEditTrainee, onDraftChanged);
+            if (typeof onDraftChanged === 'function') onDraftChanged();
+          };
+        });
+        pop.querySelectorAll('[data-heat-edit]').forEach(b=>{
+          b.onclick = ()=>{
+            const idx = +b.getAttribute('data-heat-edit');
+            const rowIdx = +b.getAttribute('data-heat-edit-row');
+            pop.remove();
+            overlay.remove();
+            onEditTrainee(idx, rowIdx);
+          };
+        });
+      }
       overlay.querySelectorAll('[data-heat-cell]').forEach(td=>{
         td.onclick = ()=>{
           const [khoaId, moIdx] = td.getAttribute('data-heat-cell').split('::');
-          const mo = months[+moIdx];
-          const u = (state.config.units||[]).find(x=>x.id===khoaId);
-          const students = draftStudentsAt(khoaId, mo);
-          if (!students.length) return;
-          const pop = el(`<div class="modal-overlay" style="z-index:10000"><div class="modal" style="max-width:420px">
-            <h3 style="margin-top:0">${u?u.name:''} — ${mo.label}</h3>
-            <p class="muted" style="margin-top:-6px">${students.length} học viên trong dự thảo đang chiếm chỗ ở đây. Bấm "✏️ Sửa" để đổi khoa/ngày cho người đó ngay.</p>
-            <div style="max-height:300px;overflow:auto">
-              ${students.map(s=>`
-                <div class="row-flex" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)">
-                  <span>${s.hoTen}</span>
-                  <button type="button" class="ghost small-btn" data-heat-edit="${s.idx}">✏️ Sửa</button>
-                </div>
-              `).join('')}
-            </div>
-            <div class="row-flex" style="justify-content:flex-end;margin-top:10px">
-              <button type="button" id="heat-pop-close">Đóng</button>
-            </div>
-          </div></div>`);
-          root.appendChild(pop);
-          pop.querySelector('#heat-pop-close').onclick = ()=> pop.remove();
-          pop.querySelectorAll('[data-heat-edit]').forEach(b=>{
-            b.onclick = ()=>{
-              const idx = +b.getAttribute('data-heat-edit');
-              pop.remove();
-              overlay.remove();
-              onEditTrainee(idx);
-            };
-          });
+          openCellPopup(khoaId, moIdx);
         };
       });
     }
@@ -4114,6 +4208,21 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           lastCell.font = { bold:true };
           lastCell.border = xlsxThinBorder();
         });
+        // Dòng "Tổng cộng theo tháng" ở cuối sheet TongHop — cộng dồn tất cả khoa mỗi tháng, để đối
+        // chiếu nhanh với tổng số học viên trong dự thảo (${activeDraft.length} người).
+        {
+          const sumRow = ws1.addRow(['', '📊 Tổng cộng theo tháng',
+            ...months.map((mo,idx)=> rows.reduce((s,r)=> s + r.total[idx], 0) || null),
+            rows.reduce((s,r)=> s + r.total.reduce((a,b)=>a+b,0), 0) || null,
+          ]);
+          sumRow.eachCell(cell=>{
+            cell.font = { bold:true };
+            cell.fill = { type:'pattern', pattern:'solid', fgColor:{argb:'FFFFF3CD'} };
+            cell.alignment = { horizontal:'center' };
+            cell.border = { top:{style:'medium', color:{argb:'FFD8A800'}}, left:{style:'thin', color:{argb:XLSX_BORDER_COLOR}}, bottom:{style:'thin', color:{argb:XLSX_BORDER_COLOR}}, right:{style:'thin', color:{argb:XLSX_BORDER_COLOR}} };
+          });
+          sumRow.getCell(2).alignment = { horizontal:'left' };
+        }
         ws1.columns = [{width:6},{width:24}, ...headerLabels.map(()=>({width:9})), {width:9}];
         ws1.views = [{ state:'frozen', xSplit:2, ySplit:1 }];
 
@@ -5103,6 +5212,20 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         totalCell.font = { bold:true };
         totalCell.border = xlsxThinBorder();
       });
+      // Dòng "Tổng cộng theo tháng" — cộng dồn tất cả khoa mỗi tháng, để đối chiếu nhanh xem có
+      // đúng khớp tổng số học viên đang có/dự kiến không, không cần tự cộng tay từng cột.
+      {
+        const sumPerMonth = headerLabels.map((h,idx)=> rows.reduce((s,r)=> s + (r.counts[idx]||0), 0));
+        const grand = sumPerMonth.reduce((a,b)=>a+b,0);
+        const sumRow = ws.addRow(['', '📊 Tổng cộng theo tháng', ...sumPerMonth.map(n=>n||null), grand||null]);
+        sumRow.eachCell(cell=>{
+          cell.font = { bold:true };
+          cell.fill = { type:'pattern', pattern:'solid', fgColor:{argb:'FFFFF3CD'} };
+          cell.alignment = { horizontal:'center' };
+          cell.border = { top:{style:'medium', color:{argb:'FFD8A800'}}, left:{style:'thin', color:{argb:XLSX_BORDER_COLOR}}, bottom:{style:'thin', color:{argb:XLSX_BORDER_COLOR}}, right:{style:'thin', color:{argb:XLSX_BORDER_COLOR}} };
+        });
+        sumRow.getCell(2).alignment = { horizontal:'left' };
+      }
       ws.columns = [
         { width:6 }, { width:24 },
         ...headerLabels.map(()=>({ width:9 })),
@@ -7153,8 +7276,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           <div id="bp-candidates" style="max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:6px"></div>
         </div>
         <div class="card">
-          <h3 style="font-size:14px">Bước 2 — Chọn hoặc soạn Lộ trình luân khoa mẫu</h3>
-          <p class="muted" style="margin-top:-6px">Danh sách Khoa + số tháng theo đúng thứ tự luân chuyển — Phòng CĐT tự soạn đúng theo quy định tại Nghị định 96/2023/NĐ-CP cho từng chức danh (hệ thống không tự suy đoán yêu cầu này). Lưu lại để dùng cho các đợt sau.</p>
+          <h3 style="font-size:14px">Bước 2 — Chọn hoặc soạn Lộ trình luân khoa mẫu (danh mục khoa theo từng chức danh)</h3>
+          <p class="muted" style="margin-top:-6px">Đây chính là <b>"danh mục khoa được phân công" theo từng nhóm chức danh</b> (Bác sĩ, Dược sĩ, Điều dưỡng...) — mỗi lộ trình mẫu lưu sẵn đúng danh sách Khoa + số tháng + thứ tự luân chuyển theo quy định tại Nghị định 96/2023/NĐ-CP. Bấm "🎁 Nạp 12 lộ trình chuẩn" bên dưới để có sẵn danh mục cho đủ các chức danh, rồi chọn đúng mẫu khớp với nhóm học viên đang lập ở Bước 1 — <b>không cần khai báo gì thêm</b>. Khoa nào không có trong đúng lộ trình của chức danh đó sẽ hiện 0 ở bảng tải trọng — đây là bình thường, không phải lỗi (vì chức danh đó không cần luân qua khoa đó).</p>
           <div class="row-flex">
             <select id="bp-tpl-select" style="flex:2">
               <option value="">— Soạn lộ trình mới —</option>
@@ -7176,14 +7299,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           </div>
         </div>
         <div class="card">
-          <h3 style="font-size:14px">Bước 3 — Ngày bắt đầu & cách chia</h3>
+          <h3 style="font-size:14px">Bước 3 — Ngày bắt đầu</h3>
           <div class="row-flex">
             <div class="field"><label>Ngày bắt đầu tổ chức</label><input type="date" id="bp-startdate" value="${todayISO()}" /></div>
-            <label style="display:flex;align-items:center;gap:8px;margin-top:22px">
-              <input type="checkbox" id="bp-stagger" checked />
-              <span>So le điểm bắt đầu giữa các học viên, ưu tiên khoa đang ÍT học viên nhất trước (khuyến nghị — tự cân đối theo số lượng thực tế đang có ở từng khoa vào đúng ngày bắt đầu, tránh khoa này đông/khoa kia vắng)</span>
-            </label>
           </div>
+          <p class="muted" style="margin-top:6px">Tất cả học viên trong đợt này bắt đầu <b>cùng đúng 1 ngày</b>. Hệ thống tự tính đúng "Từ ngày/Đến ngày" nối tiếp nhau cho từng dòng theo số tháng, tự quay vòng khoa cho các nhóm có nhiều khoa thay thế (Cấp cứu/Nội/Ngoại/Chuyên khoa lẻ), và tự xoay vị trí bắt đầu trong lộ trình giữa các học viên để tránh dồn cả nhóm vào đúng 1 khoa/1 tháng cùng lúc — đặc biệt cần thiết cho Hệ Sản/Hệ Nhi vì các nhóm này chỉ có đúng 1 khoa cố định, không có khoa nào khác để thay thế. Vẫn nên xem lại "🌡️ Xem tải trọng dự thảo" ở Bước 2 trước khi áp dụng để chắc chắn.</p>
           <label style="display:flex;align-items:center;gap:8px;margin-top:8px;cursor:pointer">
             <input type="checkbox" id="bp-by-specialty" />
             <span>🧬 Tự động chọn lộ trình theo <b>Định hướng chuyên khoa</b> đã khai báo của TỪNG học viên (bỏ qua lộ trình chung chọn ở Bước 2 — ai chưa khai báo định hướng thì vẫn dùng lộ trình chung đó làm dự phòng)</span>
@@ -7337,70 +7457,70 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         const validRows = tplRows.filter(r=>r.khoaId && parseFloat(r.soThang)>0);
         if (!validRows.length){ alert('Lộ trình luân khoa chưa hợp lệ — cần ít nhất 1 dòng đủ Khoa + số tháng.'); return; }
         const fallbackKhoaList = validRows.map(r=>({ khoaId:r.khoaId, khoaTen:(unitOptions.find(u=>u.id===r.khoaId)||{}).name||'', soThang:parseFloat(r.soThang) }));
-        // Nhóm 1 — Hồi sức cấp cứu có 7 khoa hợp lệ theo quy định (không bắt buộc luôn là đúng 2 khoa
-        // mặc định của mẫu chuẩn) — quay vòng để chia đều học viên qua nhiều khoa, tránh dồn hết vào
-        // 1-2 khoa cố định như trước.
-        const CAP_CUU_SEARCH_PHRASES = [
-          'khám bệnh cấp cứu', 'khám bệnh - cấp cứu',
-          'hồi sức tích cực - chống độc', 'hstc',
-          'gây mê hồi sức',
-          'hồi sức ngoại thần kinh cột sống',
-          'hồi sức cấp cứu - khoa nhi',
-          'hồi sức cấp cứu - khoa thần kinh đột quỵ', 'hồi sức cấp cứu - thần kinh đột quỵ',
-          'hồi sức cấp cứu - khoa truyền nhiễm', 'hồi sức cấp cứu - truyền nhiễm',
+        // Nhóm khoa tương đương theo ĐÚNG "Quy định cụ thể cho học viên thực hành cấp GPHN" + "Quy
+        // định chung — các khoa lâm sàng tại bệnh viện" (33 khoa, 6 nhóm). Hễ 1 dòng lộ trình đang
+        // trỏ tới 1 khoa thuộc nhóm dưới đây, mỗi học viên (theo SỐ THỨ TỰ i) sẽ được xếp vào 1 khoa
+        // KHÁC NHAU trong CHÍNH nhóm đó — vẫn CÙNG NGÀY BẮT ĐẦU và CÙNG THỨ TỰ dòng như lộ trình mẫu
+        // cho mọi người (không dịch ngày, không xoay vị trí — 2 thứ từng gây lỗi dồn/lệch trước đây),
+        // nên chỉ riêng việc đổi "khoa cụ thể" theo vòng quay là đủ để rải học viên ra, mà không có
+        // rủi ro tính sai ngày hay tạo khoảng trống lịch cho ai.
+        const DEFAULT_ROTATION_GROUPS = [
+          { ten: 'Hồi sức cấp cứu', phrases: ['khám bệnh cấp cứu', 'khám bệnh - cấp cứu', 'hstc', 'gây mê hồi sức'] },
+          { ten: 'Hệ Nội', phrases: [
+            'nội tiêu hóa', 'nội tổng hợp', 'thần kinh - đột quỵ', 'thần kinh đột quỵ',
+            'nội tim mạch', 'tim mạch can thiệp', 'nội tiết', 'nội thận - lọc máu', 'nội thận',
+            'lão khoa', 'nội trung cao', 'truyền nhiễm',
+          ]},
+          { ten: 'Hệ Ngoại', phrases: [
+            'ngoại chấn thương', 'ngoại lồng ngực', 'ngoại tiết niệu', 'ngoại tổng hợp',
+            'ung bướu', 'ngoại thần kinh - cột sống', 'ngoại thần kinh',
+          ]},
+          { ten: 'Chuyên khoa lẻ', phrases: ['tai mũi họng', 'khoa mắt', 'răng hàm mặt', 'y học cổ truyền', 'phục hồi chức năng', 'da liễu'] },
+          // Hệ Sản (Phụ Sản + Hỗ trợ sinh sản) và Hệ Nhi (Nhi + Nhi sơ sinh) KHÔNG rải — quy định
+          // luôn dùng đúng cả 2 khoa cố định đó cho mọi học viên.
         ];
-        const capCuuPool = [];
-        CAP_CUU_SEARCH_PHRASES.forEach(phrase=>{
-          const u = unitOptions.find(x=> (x.name||'').toLowerCase().includes(phrase) && !capCuuPool.some(p=>p.id===x.id));
-          if (u) capCuuPool.push(u);
-        });
-        const capCuuIdSet = new Set(fallbackKhoaList.filter(k=>capCuuPool.some(p=>p.id===k.khoaId)).map(k=>k.khoaId));
+        const rotationPools = DEFAULT_ROTATION_GROUPS.map(grp=>{
+          const pool = [];
+          grp.phrases.forEach(phrase=>{
+            const u = unitOptions.find(x=> (x.name||'').toLowerCase().includes(phrase) && !pool.some(p=>p.id===x.id));
+            if (u) pool.push(u);
+          });
+          const idSet = new Set(fallbackKhoaList.filter(k=>pool.some(p=>p.id===k.khoaId)).map(k=>k.khoaId));
+          return { ten: grp.ten, pool, idSet };
+        }).filter(rp=> rp.pool.length > 1 && rp.idSet.size > 0);
         const startDate = body.querySelector('#bp-startdate').value || todayISO();
-        const stagger = body.querySelector('#bp-stagger').checked;
         const bySpecialty = body.querySelector('#bp-by-specialty').checked;
         const traineeList = Array.from(selectedIds).map(id=>state.trainees.find(t=>t.id===id)).filter(Boolean);
         const specialtyWarnings = [];
-        // Cân đối theo TẢI HIỆN TẠI thực tế của từng khoa (đang có bao nhiêu học viên khác ở đó vào
-        // đúng ngày bắt đầu dự kiến) — thay vì chia đều máy móc theo thứ tự mảng. Khoa nào đang ít
-        // người hơn sẽ được ưu tiên nhận học viên MỚI trước, tránh dồn khoa này nhiều/khoa kia ít.
-        function currentLoadAt(khoaId, dateRef){
-          let count = 0;
-          state.trainees.forEach(tr=>{
-            (tr.giaiDoan||[]).forEach(g=>{
-              if (g.khoaId===khoaId && g.tuNgay && g.tuNgay<=dateRef && (!g.denNgay || g.denNgay>=dateRef)) count++;
-            });
-          });
-          return count;
-        }
-        const loadOrder = fallbackKhoaList
-          .map((k,idx)=>({ idx, load: currentLoadAt(k.khoaId, startDate) }))
-          .sort((a,b)=> a.load - b.load)
-          .map(x=>x.idx);
         draft = traineeList.map((t,i)=>{
           let khoaList = fallbackKhoaList;
           let usedSpecialty = false;
-          let offsetOrder = loadOrder;
           if (bySpecialty){
             const spec = buildSpecialtyKhoaList(t.dinhHuongChuyenKhoa);
             if (spec){
               khoaList = spec.khoaList;
               usedSpecialty = true;
-              offsetOrder = null; // lộ trình riêng theo chuyên khoa — không dùng thứ tự cân tải chung
               if (spec.warnings.length) specialtyWarnings.push(t.hoTen+' ('+t.dinhHuongChuyenKhoa+'): '+spec.warnings.join(' '));
             }
           }
-          // Quay vòng khoa trong nhóm Hồi sức cấp cứu (nếu mẫu đang chọn có dùng dòng nào thuộc nhóm này)
-          // để chia đều học viên qua nhiều khoa trong 7 khoa hợp lệ, không dồn hết vào 1-2 khoa cố định.
-          if (capCuuPool.length > 1){
-            let capCuuSlot = 0;
+          // Đổi khoa CỤ THỂ cho từng dòng thuộc 1 nhóm ở trên, theo vòng quay (i + slot) — KHÔNG
+          // đổi ngày, KHÔNG đổi thứ tự dòng, chỉ đổi TÊN KHOA của đúng dòng đó cho từng học viên.
+          rotationPools.forEach(rp=>{
+            let slot = 0;
             khoaList = khoaList.map(k=>{
-              if (!capCuuIdSet.has(k.khoaId)) return k;
-              const picked = capCuuPool[(i + capCuuSlot) % capCuuPool.length];
-              capCuuSlot++;
+              if (!rp.idSet.has(k.khoaId)) return k;
+              const picked = rp.pool[(i + slot) % rp.pool.length];
+              slot++;
               return { khoaId: picked.id, khoaTen: picked.name, soThang: k.soThang };
             });
-          }
-          const offset = stagger ? (offsetOrder ? offsetOrder[i % offsetOrder.length] : (i % khoaList.length)) : 0;
+          });
+          // Xoay VỊ TRÍ bắt đầu trong danh sách khoa theo từng học viên (0, 1, 2... tối đa bằng số
+          // dòng lộ trình) — KHÔNG đổi ngày bắt đầu chung, KHÔNG tạo khoảng trống lịch cho ai (mỗi
+          // học viên vẫn đủ và liên tục toàn bộ các dòng, chỉ khác dòng nào đi TRƯỚC). Bắt buộc phải
+          // có bước này cho các nhóm KHÔNG có khoa thay thế (Hệ Sản, Hệ Nhi — chỉ đúng 1 khoa cố định
+          // theo quy định) — nếu không xoay vị trí, mọi học viên sẽ tới đúng khoa đó CÙNG MỘT LÚC vì
+          // không có cách rải nào khác (không có khoa nào để đổi sang).
+          const offset = i % khoaList.length;
           const seq = khoaList.slice(offset).concat(khoaList.slice(0, offset));
           let cursor = startDate;
           const rows = seq.map(k=>{
@@ -7412,11 +7532,13 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           return { traineeId: t.id, hoTen: t.hoTen, maHoSo: t.maHoSo, dinhHuong: usedSpecialty ? (t.dinhHuongChuyenKhoa||'') : '', rows, excluded: false };
         });
         step = 2;
+        step2OnlyIdx = null;
         renderStep2(specialtyWarnings);
       };
     }
 
     let editingSet = new Set();
+    let step2OnlyIdx = null; // null = hiện tất cả; mảng chỉ số = chỉ hiện đúng những người đó
     function recalcDatesForDraftStudent(d){
       let cursor = (d.rows[0] && d.rows[0].tuNgay) || body_bp_startdate_fallback();
       d.rows.forEach(r=>{
@@ -7429,14 +7551,19 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       const el2 = overlay.querySelector('#bp-startdate');
       return (el2 && el2.value) || todayISO();
     }
-    function renderStep2(specialtyWarnings){
+    function renderStep2(specialtyWarnings, onlyIdx){
       specialtyWarnings = specialtyWarnings || [];
       const body = overlay.querySelector('#bp-body');
       const totalThang = draft[0] ? draft[0].rows.reduce((s,r)=>s+r.soThang,0) : 0;
+      // Nếu được mở từ popup "🌡️ Xem tải trọng dự thảo" (bấm ô có nhiều học viên), chỉ hiện ĐÚNG
+      // NHỮNG NGƯỜI liên quan (onlyIdx là 1 mảng chỉ số) thay vì toàn bộ 19 người — đỡ phải cuộn tìm.
+      const visibleIdxSet = Array.isArray(onlyIdx) ? new Set(onlyIdx) : null;
+      const draftIndexed = draft.map((d,i)=>({d,i}));
+      const visibleList = visibleIdxSet ? draftIndexed.filter(x=>visibleIdxSet.has(x.i)) : draftIndexed;
       body.innerHTML = `
         <div class="card" style="background:#eefaf0">
           <h3 style="font-size:14px">📝 Dự thảo phân bổ — ${draft.length} học viên</h3>
-          <p class="muted" style="margin-top:-6px">Kiểm tra lại từng người — bỏ tick những ai CHƯA muốn áp dụng đợt này (vẫn tạo được sau, không mất dữ liệu). Bấm "✏️ Sửa" ở từng người để đổi khoa/số tháng/ngày bắt đầu/thêm-bớt dòng ngay tại đây trước khi áp dụng chính thức. Đổi "Từ ngày" ở dòng đầu tiên sẽ tự tính lại ngày của các dòng phía sau theo đúng thứ tự. Riêng khoa thuộc <b>Nhóm 1 — Hồi sức cấp cứu</b> (Khám bệnh-Cấp cứu, HSTC-CĐ, Gây mê Hồi sức...) đã được <b>tự động quay vòng chia đều</b> qua nhiều khoa hợp lệ trong nhóm, không dồn hết vào 1-2 khoa cố định.</p>
+          <p class="muted" style="margin-top:-6px">Kiểm tra lại từng người — bỏ tick những ai CHƯA muốn áp dụng đợt này (vẫn tạo được sau, không mất dữ liệu). Bấm "✏️ Sửa" ở từng người để đổi khoa/số tháng/ngày bắt đầu/thêm-bớt dòng ngay tại đây trước khi áp dụng chính thức. Đổi "Từ ngày" ở dòng đầu tiên sẽ tự tính lại ngày của các dòng phía sau theo đúng thứ tự. Các dòng thuộc <b>Hồi sức cấp cứu, Hệ Nội, Hệ Ngoại, Chuyên khoa lẻ</b> được <b>tự động quay vòng chia đều</b> qua đúng danh sách khoa hợp lệ theo quy định (VD Hệ Nội: 10 khoa, Hệ Ngoại: 6 khoa...). Riêng <b>Hệ Sản (Phụ Sản + Hỗ trợ sinh sản)</b> và <b>Hệ Nhi (Nhi + Nhi sơ sinh)</b> không có khoa thay thế (quy định chỉ đúng 1 khoa cố định), nên để tránh cả 19 người cùng dồn vào 1 khoa cùng lúc, hệ thống <b>xoay vị trí bắt đầu trong lộ trình</b> cho từng người (ai cũng đủ và liên tục toàn bộ các dòng như nhau, chỉ khác dòng nào đi trước) — mỗi học viên vẫn luôn có việc làm liên tục, không ai bị hở lịch. Đánh đổi: một số người có thể gặp "Cấp cứu" sớm hơn dự kiến "gần cuối lộ trình" do bị xoay vị trí. Vẫn nên xem lại "🌡️ Xem tải trọng dự thảo" bên dưới trước khi áp dụng để chắc chắn không còn khoa nào bị dồn quá tải.</p>
           <div class="row-flex" style="margin-top:8px">
             <button type="button" class="secondary" id="bp-export-xlsx-edit" title="Xuất dự thảo ra Excel để xem/chỉnh cho dễ (VD: sửa khoa, ngày, số tháng hàng loạt), sau đó nhập lại bằng nút bên cạnh">📥 Xuất Excel để chỉnh sửa</button>
             <label class="secondary" style="cursor:pointer;display:inline-flex;align-items:center;gap:6px" title="Chọn file Excel đã chỉnh (giữ nguyên cột 'Mã dòng (không xoá)') để áp lại vào dự thảo bên dưới">📤 Nhập lại từ Excel đã chỉnh<input type="file" id="bp-import-xlsx-edit" accept=".xlsx,.xls" style="display:none" /></label>
@@ -7444,8 +7571,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           <div id="bp-import-xlsx-result" class="muted" style="margin-top:6px;font-size:12.5px"></div>
         </div>
         ${specialtyWarnings.length ? `<div class="card" style="background:#fbf0dc"><p style="color:#7A5A00;font-size:12.5px;margin:0">⚠ Một số học viên có dòng chưa tự khớp được tên khoa theo định hướng chuyên khoa — kiểm tra lại dòng trống trong bảng bên dưới rồi tự chọn/sửa tay ở "Phân khoa" sau khi áp dụng:<br>${specialtyWarnings.join('<br>')}</p></div>` : ''}
+        ${visibleIdxSet ? `<div class="card" style="background:#eef6ff;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+          <span>🔎 Đang chỉ hiện <b>${visibleList.length} học viên</b> liên quan đến ô anh vừa bấm (đỡ phải cuộn tìm trong ${draft.length} người).</span>
+          <button type="button" class="ghost small-btn" id="bp-show-all">↺ Xem lại tất cả ${draft.length} học viên</button>
+        </div>` : ''}
         <div style="max-height:55vh;overflow:auto">
-          ${draft.map((d,i)=>{
+          ${visibleList.map(({d,i})=>{
             const isEditing = editingSet.has(i);
             return `
             <div class="card" style="margin-bottom:10px">
@@ -7461,9 +7592,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
                 <tbody>${(()=>{ let m=1; return d.rows.map((r,j)=>{
                   const from=m; m+=(r.soThang||0); const label = r.soThang===1 ? from : (from+'–'+Math.max(from,m-1));
                   if (!isEditing){
-                    return `<tr><td style="text-align:center">${label}</td><td>${r.khoaTen||'<span style="color:var(--red)">[chưa chọn khoa]</span>'}</td><td style="text-align:center">${fmtDate(r.tuNgay)}</td><td style="text-align:center">${fmtDate(r.denNgay)}</td><td style="text-align:center">${r.soThang} tháng</td></tr>`;
+                    return `<tr data-row-key="${i}-${j}"><td style="text-align:center">${label}</td><td>${r.khoaTen||'<span style="color:var(--red)">[chưa chọn khoa]</span>'}</td><td style="text-align:center">${fmtDate(r.tuNgay)}</td><td style="text-align:center">${fmtDate(r.denNgay)}</td><td style="text-align:center">${r.soThang} tháng</td></tr>`;
                   }
-                  return `<tr>
+                  return `<tr data-row-key="${i}-${j}">
                     <td style="text-align:center">${label}</td>
                     <td><select data-edit-khoa="${i}-${j}">${unitOptions.map(u=>`<option value="${u.id}" ${u.id===r.khoaId?'selected':''}>${u.name}</option>`).join('')}</select></td>
                     <td style="text-align:center">${j===0 ? `<input type="date" data-edit-tungay="${i}" value="${r.tuNgay||''}" style="width:130px">` : fmtDate(r.tuNgay)}</td>
@@ -7486,15 +7617,36 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           </div>
         </div>
       `;
+      const btnShowAll = body.querySelector('#bp-show-all');
+      if (btnShowAll) btnShowAll.onclick = ()=>{ step2OnlyIdx = null; renderStep2(specialtyWarnings, null); };
       const btnViewHeatmap = body.querySelector('#bp-view-heatmap');
-      if (btnViewHeatmap) btnViewHeatmap.onclick = ()=> openDraftHeatmapModal(draft, (draftIdx)=>{
+      if (btnViewHeatmap) btnViewHeatmap.onclick = ()=> openDraftHeatmapModal(draft, (draftIdx, rowIdx)=>{
         editingSet.add(draftIdx);
-        renderStep2(specialtyWarnings);
+        step2OnlyIdx = [draftIdx]; // chỉ hiện đúng người này, khỏi phải cuộn tìm giữa 19 người
+        renderStep2(specialtyWarnings, step2OnlyIdx);
         setTimeout(()=>{
-          const cards = overlay.querySelectorAll('[data-draft-cb]');
-          const target = cards[draftIdx];
-          if (target) target.closest('.card').scrollIntoView({ behavior:'smooth', block:'center' });
+          const targetRow = overlay.querySelector('[data-row-key="'+draftIdx+'-'+rowIdx+'"]');
+          if (targetRow){
+            targetRow.scrollIntoView({ behavior:'smooth', block:'center' });
+            // Làm nổi bật đúng dòng vừa nhảy tới (viền vàng chớp nhẹ vài giây) để không phải dò
+            // giữa nhiều dòng khoa của cùng 1 học viên — đúng ý cần "chỉ số học viên của khoa đó
+            // trong tháng đó", thay vì phải tự tìm trong toàn bộ lộ trình dài của người đó.
+            targetRow.style.outline = '3px solid #f1c40f';
+            targetRow.style.outlineOffset = '-2px';
+            setTimeout(()=>{ targetRow.style.outline = ''; targetRow.style.outlineOffset = ''; }, 2500);
+            const sel = targetRow.querySelector('select[data-edit-khoa]');
+            if (sel) sel.focus();
+          } else {
+            const cards = overlay.querySelectorAll('[data-draft-cb]');
+            const target = cards[draftIdx];
+            if (target) target.closest('.card').scrollIntoView({ behavior:'smooth', block:'center' });
+          }
         }, 50);
+      }, ()=>{
+        // Đổi khoa nhanh ngay trong popup của bảng tải trọng (không mở lộ trình đầy đủ) — cần vẽ
+        // lại danh sách Bước 2 để các dòng/select hiển thị đúng khoa mới nếu người dùng đóng bảng
+        // tải trọng rồi quay lại xem danh sách học viên.
+        renderStep2(specialtyWarnings, step2OnlyIdx);
       });
 
       // ---- Xuất dự thảo ra Excel để chỉnh cho dễ nhìn (đổi khoa/ngày/số tháng hàng loạt bằng
@@ -7574,7 +7726,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         b.onclick = ()=>{
           const i = +b.getAttribute('data-draft-edit');
           if (editingSet.has(i)) editingSet.delete(i); else editingSet.add(i);
-          renderStep2(specialtyWarnings);
+          renderStep2(specialtyWarnings, step2OnlyIdx);
         };
       });
       body.querySelectorAll('[data-edit-tungay]').forEach(inp=>{
@@ -7583,7 +7735,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           if (!inp.value) return;
           draft[i].rows[0].tuNgay = inp.value;
           recalcDatesForDraftStudent(draft[i]);
-          renderStep2(specialtyWarnings);
+          renderStep2(specialtyWarnings, step2OnlyIdx);
         };
       });
       body.querySelectorAll('[data-edit-khoa]').forEach(sel=>{
@@ -7598,7 +7750,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           const [i,j] = inp.getAttribute('data-edit-thang').split('-').map(Number);
           draft[i].rows[j].soThang = parseFloat(inp.value)||0;
           recalcDatesForDraftStudent(draft[i]);
-          renderStep2(specialtyWarnings);
+          renderStep2(specialtyWarnings, step2OnlyIdx);
         };
       });
       body.querySelectorAll('[data-edit-delrow]').forEach(b=>{
@@ -7607,7 +7759,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           if (draft[i].rows.length<=1){ alert('Cần giữ ít nhất 1 dòng khoa.'); return; }
           draft[i].rows.splice(j,1);
           recalcDatesForDraftStudent(draft[i]);
-          renderStep2(specialtyWarnings);
+          renderStep2(specialtyWarnings, step2OnlyIdx);
         };
       });
       body.querySelectorAll('[data-edit-addrow]').forEach(b=>{
@@ -7616,7 +7768,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           const firstUnit = unitOptions[0];
           draft[i].rows.push({ khoaId: firstUnit?firstUnit.id:'', khoaTen: firstUnit?firstUnit.name:'', soThang: 1, tuNgay:'', denNgay:'' });
           recalcDatesForDraftStudent(draft[i]);
-          renderStep2(specialtyWarnings);
+          renderStep2(specialtyWarnings, step2OnlyIdx);
         };
       });
       body.querySelector('#bp-back').onclick = ()=>{ step = 1; renderStep1(); };
@@ -8323,7 +8475,17 @@ https://github.com/nodeca/pako/blob/main/LICENSE
                 return '<td style="text-align:center;background:'+bg+';color:'+color+';font-weight:'+(n>0?'bold':'normal')+'">'+(n||'')+'</td>';
               }).join('')}
               <td style="text-align:center;font-weight:bold">${r.total}</td>
-            </tr>`).join('')}</tbody>
+            </tr>`).join('')}
+            ${(()=>{
+              const sumPerMonth = heatmap.months.map((mo,idx)=> heatmap.rows.reduce((s,r)=> s + r.counts[idx], 0));
+              const grand = sumPerMonth.reduce((a,b)=>a+b,0);
+              return `<tr style="background:#fff7e0;font-weight:bold;border-top:2px solid #d8a800">
+                <td></td><td>📊 Tổng cộng theo tháng</td>
+                ${sumPerMonth.map(n=>`<td style="text-align:center">${n||''}</td>`).join('')}
+                <td style="text-align:center;background:#ffe9a8">${grand}</td>
+              </tr>`;
+            })()}
+          </tbody>
         </table>
         </div>
         <p class="muted" style="margin-top:8px;font-size:12px">🟩 1–2 học viên &nbsp; 🟨 3–4 &nbsp; 🟧 5–6 &nbsp; 🟥 ≥7 (khoa cần lưu ý ưu tiên giãn bớt qua khoa khác/tháng khác).</p>
