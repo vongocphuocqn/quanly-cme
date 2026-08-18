@@ -1687,9 +1687,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       <div class="row-flex" style="margin-top:14px">
         <button type="button" id="dnpc-batch-sign">✍️ Áp dụng chữ ký trên cho tất cả học viên đã chọn người hướng dẫn nhưng chưa ký</button>
       </div>
-      <p class="muted" style="margin-top:8px;font-size:12.5px">Lưu ý: chữ ký hình ảnh (ký nháy) chỉ mang tính minh họa/tham chiếu nội bộ, không thay thế chữ ký số hợp lệ theo Nghị định 130/2018/NĐ-CP đối với văn bản điện tử chính thức.</p>
       <div class="card" style="margin-top:16px;background:#f3f8f4;border-color:#bcdcc4">
-        <h4 style="margin:0 0 4px;color:#1e7a34;font-size:15px">🖨️ Phương án 2 — Ký giấy thật (có giá trị pháp lý cao hơn chữ ký màn hình)</h4>
+        <h4 style="margin:0 0 4px;color:#1e7a34;font-size:15px">🖨️ Phương án 2 — Ký giấy xác nhận phân công</h4>
         <p class="muted" style="margin-top:-2px">In bảng phân công ra giấy để Trưởng khoa ký tay, sau đó có thể nộp bản giấy trực tiếp cho Phòng Chỉ đạo tuyến, hoặc chụp/scan lại rồi đính kèm vào hệ thống để lưu minh chứng điện tử.</p>
         <div class="row-flex" style="margin-top:8px">
           <button type="button" class="secondary" id="dnpc-batch-print">🖨️ In bảng phân công để ký giấy (${cho.filter(x=>x.r.nguoiHuongDanId).length} học viên đã chọn người hướng dẫn)</button>
@@ -1702,7 +1701,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       <div class="card">
         <h3>📋 Đề nghị phân công hướng dẫn từ Phòng Chỉ đạo tuyến</h3>
         <p class="muted" style="margin-top:-6px">Khoa/phòng tự chọn nhân viên đủ điều kiện hướng dẫn của khoa mình cho từng học viên, ký xác nhận — hệ thống tự đưa vào phụ lục theo dõi, không cần Phòng CĐT nhập lại.</p>
-        ${xongAll.length ? `<p class="muted" style="margin-top:-4px">✅ Đã xác nhận <b>${xongAll.length}</b> học viên — các em này KHÔNG còn hiện trong bảng "Chờ phân công" bên dưới nữa, mà nằm ở khối "✅ Đã phân công" cuối trang. <a href="#dnpc-xong-anchor" id="dnpc-jump-xong" style="font-weight:bold">⬇ Xem ngay</a></p>` : ''}
+        ${xongAll.length ? `<p class="muted" style="margin-top:-4px">✅ Đã xác nhận <b>${xongAll.length}</b> học viên. <a href="#dnpc-xong-anchor" id="dnpc-jump-xong" style="font-weight:bold">⬇ Xem</a></p>` : ''}
         ${!focus ? `<div class="row-flex" style="margin:6px 0 2px">
           <button type="button" class="ghost small-btn" id="btn-open-eligible-modal">👤 Danh sách nhân viên đủ điều kiện hướng dẫn (${staffOptions.length})</button>
         </div>` : ''}
@@ -1793,7 +1792,6 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             <button type="button" class="ghost small-btn" id="dnpc-xuat-khongco-anh" title="Dùng khi máy/Word đời cũ mở file lỗi ảnh">Tải bản không kèm ảnh</button>
             <button type="button" class="secondary" id="dnpc-xuat-tonghop-excel">📊 Xuất Excel bảng tổng hợp</button>
           </div>
-          <p class="muted" style="margin-top:4px;font-size:12px">💡 Chữ ký lấy từ chữ ký gần nhất đã ký/lưu trên màn hình này (khung "✍️ Ký xác nhận" ở Dashboard), hoặc từ chữ ký đã lưu sẵn trong hồ sơ học viên. Nếu chưa từng ký trên màn hình nào, file sẽ để trống phần ký — vào Dashboard tổng quan, ký vào khung chữ ký rồi bấm "💾 Lưu chữ ký này" trước khi xuất lại.</p>
           ${!xong.length ? '<p class="muted" style="margin-top:8px">Không có học viên đã phân công nào khớp khoảng thời gian đang lọc.</p>' : `
           <div class="row-flex" style="gap:8px;margin-bottom:8px">
             <button type="button" class="ghost small-btn" id="dnpc-xong-checkall">☑ Chọn tất cả</button>
