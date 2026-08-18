@@ -357,7 +357,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     if (!Array.isArray(dm.mucDich) || !dm.mucDich.length) dm.mucDich = MUC_DICH_TH_DEFAULT.slice();
     if (!Array.isArray(dm.dinhHuongCK) || !dm.dinhHuongCK.length) dm.dinhHuongCK = DINH_HUONG_CK_DEFAULT.slice();
     if (!Array.isArray(state.config.rotationTemplates)) state.config.rotationTemplates = [];
+    if (!state.config.maxMenteePerHD) state.config.maxMenteePerHD = 5;
   }
+  // Số học viên tối đa mà 1 người hướng dẫn được nhận cùng lúc — CÓ THỂ CHỈNH được ở Admin →
+  // Cài đặt (trước đây cố định cứng số 5 trong code, không sửa được).
+  function maxHD(){ return state.config.maxMenteePerHD || 5; }
   const CHUC_VU = ["Nhân viên","Phó Trưởng khoa","Trưởng khoa","Phó Trưởng phòng","Trưởng phòng","Điều dưỡng trưởng","Phó Giám đốc","Giám đốc","Khác"];
   const ADMIN_ROLES = {
     truongphong: { label: 'Trưởng phòng CĐT (Toàn quyền)', tabs: 'all' },
@@ -1635,8 +1639,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
               <option value="">— Chưa phân —</option>
               ${staffOptions.map(e=>{
                 const cnt = countMenteesAtRange(e.id, r.tuNgay, r.denNgay);
-                const full = cnt >= 5;
-                return `<option value="${e.id}" ${r.nguoiHuongDanId===e.id?'selected':''} ${full?'disabled':''}>${e.hoTen} (${cnt}/5)${full?' — Đủ':''}</option>`;
+                const full = cnt >= maxHD();
+                return `<option value="${e.id}" ${r.nguoiHuongDanId===e.id?'selected':''} ${full?'disabled':''}>${e.hoTen} (${cnt}/${maxHD()})${full?' — Đủ':''}</option>`;
               }).join('')}
             </select></td>
             <td style="text-align:center"><button data-req-confirm="${r.id}" class="small-btn" style="${(!daChonHD||!daKy)?'opacity:.5':''}">✅ Xác nhận</button></td>
@@ -1735,8 +1739,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
                   <option value="">— Chọn người hướng dẫn —</option>
                   ${staffOptions.map(e=>{
                     const cnt = countMenteesAtRange(e.id, r.tuNgay, r.denNgay);
-                    const full = cnt >= 5;
-                    return `<option value="${e.id}" ${r.nguoiHuongDanId===e.id?'selected':''} ${full?'disabled':''}>${e.hoTen} (${cnt}/5 đang hướng dẫn)${full?' — Đã đủ 5':''}</option>`;
+                    const full = cnt >= maxHD();
+                    return `<option value="${e.id}" ${r.nguoiHuongDanId===e.id?'selected':''} ${full?'disabled':''}>${e.hoTen} (${cnt}/${maxHD()} đang hướng dẫn)${full?' — Đã đủ '+maxHD():''}</option>`;
                   }).join('')}
                 </select>
                 ${!staffOptions.length ? '<p class="muted" style="color:var(--red)">⚠ Khoa chưa có nhân viên nào được đánh dấu "Đủ điều kiện hướng dẫn". <button type="button" class="ghost small-btn" data-open-eligible-modal="1" style="margin-left:4px">✓ Đánh dấu ngay</button></p>' : ''}
@@ -1868,12 +1872,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       const selected = xongChecks().filter(c=>c.checked).map(c=>c.getAttribute('data-xong-check'));
       if (!selected.length){ alert('Chưa chọn mục nào để huỷ.'); return; }
       if (!confirm('Huỷ phân công cho ' + selected.length + ' học viên đã chọn?\n\nCác hồ sơ sẽ quay về trạng thái "Chờ phân công" để chọn/ký lại (đồng thời xoá giai đoạn thực hành đã tạo khi xác nhận trước đó). Nếu Quyết định/Phụ lục đã trình ký Giám đốc dựa trên dữ liệu cũ, cần rà soát lại các văn bản đó sau khi huỷ.')) return;
-      let count = 0;
-      for (const key of selected){
+      const results = await Promise.all(selected.map(key=>{
         const [traineeId, reqId] = key.split('::');
-        const ok = await huyPhanCong(traineeId, reqId);
-        if (ok) count++;
-      }
+        return huyPhanCong(traineeId, reqId);
+      }));
+      const count = results.filter(Boolean).length;
       showToast('Đã huỷ phân công cho ' + count + ' học viên — quay về "Chờ phân công".');
       renderUnitPhanCong(content);
     };
@@ -2136,7 +2139,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         if (!r.chuKyImage && !r.fileDataUrl){ alert('Vui lòng ký trên màn hình (khung "Ký xác nhận bằng phân công" ở Dashboard, hoặc nút Ký trong thẻ học viên) HOẶC in phiếu ký giấy rồi đính kèm bản scan, trước khi xác nhận.'); return; }
         const emp = state.employees.find(e=>e.id===hdId);
         const cnt = countMenteesAtRange(hdId, r.tuNgay, r.denNgay);
-        if (cnt >= 5){ alert('Người hướng dẫn này đã đủ 5 học viên trong khoảng thời gian này. Vui lòng chọn người khác.'); return; }
+        if (cnt >= maxHD()){ alert('Người hướng dẫn này đã đủ '+maxHD()+' học viên trong khoảng thời gian này. Vui lòng chọn người khác.'); return; }
         r.nguoiHuongDanId = hdId;
         r.nguoiHuongDan = emp ? emp.hoTen : '';
         r.nguoiKy = nguoiKy;
@@ -2233,7 +2236,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         const hdId = r.nguoiHuongDanId;
         const emp = state.employees.find(e=>e.id===hdId);
         const cnt = countMenteesAtRange(hdId, r.tuNgay, r.denNgay);
-        if (cnt >= 5){ boQuaDuQuota++; continue; }
+        if (cnt >= maxHD()){ boQuaDuQuota++; continue; }
         r.nguoiHuongDan = emp ? emp.hoTen : r.nguoiHuongDan;
         r.nguoiKy = (r.nguoiKy||'').trim() || tenChung;
         r.chuKyImage = dataUrl;
@@ -2307,7 +2310,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           const hdId = r.nguoiHuongDanId;
           const emp = state.employees.find(e=>e.id===hdId);
           const cnt = countMenteesAtRange(hdId, r.tuNgay, r.denNgay);
-          if (cnt >= 5){ boQuaDuQuota++; continue; }
+          if (cnt >= maxHD()){ boQuaDuQuota++; continue; }
           r.nguoiHuongDan = emp ? emp.hoTen : r.nguoiHuongDan;
           r.nguoiKy = (r.nguoiKy||'').trim() || tenChung;
           r.files = pseudoDoc.files.slice();
@@ -8357,7 +8360,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         }
         traineesToSave.set(t.id, t);
       });
-      for (const t of traineesToSave.values()){ await saveTrainee(t); }
+      // Lưu SONG SONG (Promise.all) thay vì tuần tự từng người — mỗi lượt lưu là 1 lượt gọi mạng
+      // riêng, xếp hàng tuần tự sẽ rất chậm khi xoá hàng chục/hàng trăm mục cùng lúc.
+      await Promise.all(Array.from(traineesToSave.values()).map(t=>saveTrainee(t)));
       showToast('Đã xoá ' + selected.length + ' đề nghị đang chờ.');
       renderTraineeByKhoaView(content);
     };
@@ -8376,18 +8381,19 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     if (btnCheckNone) btnCheckNone.onclick = ()=>{ doneChecks().forEach(c=>c.checked = false); capNhatSoDaChon(); };
     // Khoá/mở khoá NHIỀU học viên cùng lúc — dùng chung cho "Khoá cả khoa" và "Khoá hàng loạt đã chọn".
     async function khoaHangLoat(keys, trangThaiKhoa){
-      let count = 0;
-      for (const key of keys){
+      // Lưu SONG SONG để nhanh hơn nhiều lần khi khoá/mở khoá hàng loạt nhiều học viên cùng lúc.
+      const toSave = [];
+      keys.forEach(key=>{
         const [traineeId, reqId] = key.split('::');
         const t = visibleTrainees().find(x=>x.id===traineeId);
         const r = t && (t.deNghiPhanCongList||[]).find(x=>x.id===reqId);
-        if (!t || !r) continue;
-        if (!!r.daChot === trangThaiKhoa) continue;
+        if (!t || !r) return;
+        if (!!r.daChot === trangThaiKhoa) return;
         r.daChot = trangThaiKhoa;
-        await saveTrainee(t);
-        count++;
-      }
-      return count;
+        toSave.push(t);
+      });
+      await Promise.all(toSave.map(t=>saveTrainee(t)));
+      return toSave.length;
     }
     let doneKhoaChonId = '';
     const doneKhoaOptions = Array.from(new Set(doneList.map(x=>x.r.khoaId).filter(Boolean)))
@@ -8455,7 +8461,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         r.ngayKy = '';
         traineesToSave.set(t.id, t);
       });
-      for (const t of traineesToSave.values()){ recomputeTraineeOverallStatus(t); await saveTrainee(t); }
+      for (const t of traineesToSave.values()){ recomputeTraineeOverallStatus(t); }
+      await Promise.all(Array.from(traineesToSave.values()).map(t=>saveTrainee(t)));
       showToast('Đã mở lại ' + selected.length + ' mục — quay về trạng thái "Chờ phân công".');
       renderTraineeByKhoaView(content);
     };
@@ -8716,7 +8723,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           <tbody>${list.map((r,i)=>`
             <tr>
               <td style="text-align:center">${i+1}</td><td>${r.name}</td><td>${r.chucDanh||'—'}</td><td>${r.donVi}</td>
-              <td>${r.dangHuongDan>=5?`<span class="pill red">${r.dangHuongDan}/5 — Đã đầy</span>`:(r.dangHuongDan>0?`<span class="pill amber">${r.dangHuongDan}/5</span>`:`<span class="pill gray">0/5</span>`)}</td>
+              <td>${r.dangHuongDan>=maxHD()?`<span class="pill red">${r.dangHuongDan}/${maxHD()} — Đã đầy</span>`:(r.dangHuongDan>0?`<span class="pill amber">${r.dangHuongDan}/${maxHD()}</span>`:`<span class="pill gray">0/${maxHD()}</span>`)}</td>
               <td>${r.dangHuongDan>0?`<button class="ghost small-btn" data-instr-detail="${r.id}">👁️ Chi tiết</button>`:''}</td>
             </tr>`).join('') || '<tr><td colspan="6" style="text-align:center">Không có người hướng dẫn phù hợp với bộ lọc.</td></tr>'}</tbody>
         </table>
@@ -10723,8 +10730,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       if (!candidates.length) return [{ id:'', label:'— Chưa có nhân viên đủ điều kiện hướng dẫn tại khoa này —', isAction:true }];
       return [{ id:'', label:'— Chọn người hướng dẫn —', isAction:true }].concat(candidates.map(e=>{
         const cnt = countMenteesAtRange(e.id, tuNgay, denNgay);
-        const full = cnt >= 5;
-        return { id: e.id, label: e.hoTen + ' (' + cnt + '/5 đang hướng dẫn)' + (full?' — Đã đủ 5':'') };
+        const full = cnt >= maxHD();
+        return { id: e.id, label: e.hoTen + ' (' + cnt + '/'+maxHD()+' đang hướng dẫn)' + (full?' — Đã đủ '+maxHD():'') };
       }));
     }
     function refreshInstructorSelect(){
@@ -11021,7 +11028,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         const emp = state.employees.find(e=>e.id===hdId);
         hdName = emp ? emp.hoTen : '';
         const cnt = countMenteesAtRange(hdId, tuNgay, denNgay);
-        if (cnt >= 5){ alert('Người hướng dẫn này đã đủ 5 học viên trong khoảng thời gian đã chọn. Vui lòng chọn người khác hoặc điều chỉnh thời gian.'); return; }
+        if (cnt >= maxHD()){ alert('Người hướng dẫn này đã đủ '+maxHD()+' học viên trong khoảng thời gian đã chọn. Vui lòng chọn người khác hoặc điều chỉnh thời gian.'); return; }
       }
       stages.push({
         id: uid('gd'),
@@ -11111,8 +11118,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       if (!candidates.length) return [{ id:'', label:'— Chưa có nhân viên đủ điều kiện hướng dẫn tại khoa này —', isAction:true }];
       return [{ id:'', label:'— Chọn người hướng dẫn —', isAction:true }].concat(candidates.map(e=>{
         const cnt = countMenteesAtRange(e.id, tuNgay, denNgay, stage.id);
-        const full = cnt >= 5;
-        return { id: e.id, label: e.hoTen + ' (' + cnt + '/5 đang hướng dẫn)' + (full?' — Đã đủ 5':'') };
+        const full = cnt >= maxHD();
+        return { id: e.id, label: e.hoTen + ' (' + cnt + '/'+maxHD()+' đang hướng dẫn)' + (full?' — Đã đủ '+maxHD():'') };
       }));
     }
     function refreshInstructorSelectEdit(){
@@ -11162,7 +11169,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         const emp = state.employees.find(e=>e.id===hdId);
         hdName = emp ? emp.hoTen : '';
         const cnt = countMenteesAtRange(hdId, tuNgay, denNgay, stage.id);
-        if (cnt >= 5){ errBox.textContent = '⚠ Người hướng dẫn này đã đủ 5 học viên trong khoảng thời gian đã chọn. Vui lòng chọn người khác hoặc điều chỉnh thời gian.'; errBox.style.display = 'block'; return; }
+        if (cnt >= maxHD()){ errBox.textContent = '⚠ Người hướng dẫn này đã đủ '+maxHD()+' học viên trong khoảng thời gian đã chọn. Vui lòng chọn người khác hoặc điều chỉnh thời gian.'; errBox.style.display = 'block'; return; }
       }
       stage.khoaId = khoaId;
       stage.khoa = khoaUnit.name;
@@ -11804,6 +11811,14 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         <div id="reset-status" class="muted" style="margin-top:8px"></div>
       </div>
       <div class="card">
+        <h3>Số học viên tối đa mỗi người hướng dẫn được nhận cùng lúc</h3>
+        <p class="muted">Áp dụng cho toàn hệ thống — khi chọn người hướng dẫn ở bất kỳ đâu (Phân khoa, Đề nghị phân công của khoa, Lập kế hoạch phân bổ hàng loạt...), người đã đủ số này trong cùng khoảng thời gian sẽ không chọn được nữa (hiện "— Đã đủ"). Mặc định là 5.</p>
+        <div class="row-flex">
+          <input type="number" min="1" step="1" id="max-hd-input" value="${maxHD()}" style="max-width:100px" />
+          <button id="btn-save-maxhd">💾 Lưu</button>
+        </div>
+      </div>
+      <div class="card">
         <h3>Quy định áp dụng</h3>
         <p class="muted">Hệ thống áp dụng quy định tại Thông tư 32/2023/TT-BYT: yêu cầu tối thiểu ${REQUIRED_HOURS} giờ tín chỉ trong chu kỳ ${CYCLE_YEARS} năm liên tục cho người hành nghề khám bệnh, chữa bệnh. Ngưỡng "Nguy cơ" được tính khi còn ≤ 6 tháng đến hạn chu kỳ mà chưa đạt đủ giờ; ngưỡng "Cần chú ý" khi tiến độ thực hiện chậm hơn 15% so với tiến độ tuyến tính kỳ vọng.</p>
       </div>
@@ -11850,6 +11865,13 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       else { state.config.adminPin = pin; await saveConfig(); }
       showToast('Đã đổi mã PIN quản trị cho tài khoản của anh/chị.');
       document.getElementById('new-admin-pin').value='';
+    };
+    document.getElementById('btn-save-maxhd').onclick = async ()=>{
+      const v = parseInt(document.getElementById('max-hd-input').value, 10);
+      if (!v || v < 1){ alert('Vui lòng nhập số nguyên dương hợp lệ.'); return; }
+      state.config.maxMenteePerHD = v;
+      await saveConfig();
+      showToast('Đã lưu — số học viên tối đa mỗi người hướng dẫn là ' + v + '.');
     };
     document.getElementById('btn-backup').onclick = async ()=>{
       const status = document.getElementById('backup-status');
