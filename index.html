@@ -4047,9 +4047,86 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       return { khoaId, name, existing, added, total };
     }).sort((a,b)=> a.name.localeCompare(b.name,'vi'));
     let dhZoomed = false;
+    // Tách phần XÂY BẢNG ra thành hàm riêng để có thể VẼ LẠI ĐÚNG PHẦN BẢNG khi dữ liệu đổi (sau khi
+    // "Lưu" ở popup đổi khoa nhanh), mà KHÔNG cần đóng/mở lại toàn bộ khung ngoài (tiêu đề, mô tả,
+    // nút bấm) — tránh hẳn rủi ro bị thoát nhầm ra ngoài do gỡ/dựng lại cả modal mỗi lần đổi 1 khoa.
+    function computeRowsFresh(){
+      const activeDraftNow = (draft||[]).map((d,idx)=>({...d, _idx:idx})).filter(d=>!d.excluded);
+      const draftAttributionNow = [];
+      activeDraftNow.forEach(d=>{
+        months.forEach((mo,mIdx)=>{
+          let bestRowIdx = -1, bestKhoaId = null, bestDays = 0;
+          (d.rows||[]).forEach((r,rIdx)=>{
+            if (!r.khoaId) return;
+            const days = soNgayGiaoNhau(r.tuNgay||'0000-01-01', r.denNgay||'9999-12-31', mo.from, mo.to);
+            if (days > bestDays){ bestDays = days; bestKhoaId = r.khoaId; bestRowIdx = rIdx; }
+          });
+          if (bestKhoaId) draftAttributionNow.push({ draftIdx:d._idx, rowIdx:bestRowIdx, khoaId:bestKhoaId, mIdx });
+        });
+      });
+      function draftCountNow(khoaId, mIdx){ return draftAttributionNow.filter(a=>a.khoaId===khoaId && a.mIdx===mIdx).length; }
+      function draftStudentsAtNow(khoaId, mIdx){
+        return draftAttributionNow.filter(a=>a.khoaId===khoaId && a.mIdx===mIdx).map(a=>{
+          const d = activeDraftNow.find(x=>x._idx===a.draftIdx);
+          return d ? { idx:a.draftIdx, hoTen:d.hoTen, rowIdx:a.rowIdx } : null;
+        }).filter(Boolean);
+      }
+      const rowsNow = khoaIds.map(khoaId=>{
+        const u = (state.config.units||[]).find(x=>x.id===khoaId);
+        const rTpl = activeDraftNow.flatMap(d=>d.rows).find(r=>r.khoaId===khoaId);
+        const name = (u&&u.name) || (rTpl&&rTpl.khoaTen) || '(không rõ tên khoa)';
+        const existing = months.map((mo,mIdx)=> existingCount(khoaId, mo));
+        const added = months.map((mo,mIdx)=> draftCountNow(khoaId, mIdx));
+        const total = months.map((mo,idx)=> existing[idx]+added[idx]);
+        return { khoaId, name, existing, added, total };
+      }).sort((a,b)=> a.name.localeCompare(b.name,'vi'));
+      return { rowsNow, activeDraftNow, draftStudentsAtNow };
+    }
+    function buildTbodyHtml(rowsArg, activeDraftArg){
+      return rowsArg.map((r,idx0)=>{
+        const tongExisting = r.existing.reduce((a,b)=>a+b,0);
+        const tongAdded = r.added.reduce((a,b)=>a+b,0);
+        const tongAll = tongExisting + tongAdded;
+        return `
+        <tr>
+          <td style="position:sticky;left:0;z-index:1;background:#fff;text-align:center;color:#888">${idx0+1}</td>
+          <td style="position:sticky;left:40px;z-index:1;background:#fff;font-weight:bold">${r.name}</td>
+          ${r.total.map((n,idx)=>{
+            let bg = '#fff', color = '#999';
+            if (n>=7){ bg='#c0392b'; color='#fff'; }
+            else if (n>=5){ bg='#e67e22'; color='#fff'; }
+            else if (n>=3){ bg='#f1c40f'; color='#5a4a00'; }
+            else if (n>=1){ bg='#a8e6b8'; color='#1e6b34'; }
+            const addedN = r.added[idx];
+            const clickable = onEditTrainee && addedN>0;
+            return '<td style="text-align:center;background:'+bg+';color:'+color+(clickable?';cursor:pointer;text-decoration:underline dotted':'')+'"'+
+              (clickable ? ' data-heat-cell="'+r.khoaId+'::'+idx+'" title="Bấm để xem/sửa học viên đang chiếm chỗ ở đây"' : '') + '>'+
+              (n>0 ? (r.existing[idx]+(addedN>0?' <b>+'+addedN+'</b>':'')+' = '+n) : '') +
+            '</td>';
+          }).join('')}
+          <td style="text-align:center;font-weight:bold;background:#eef6ff">${tongExisting}${tongAdded>0?' <b>+'+tongAdded+'</b>':''} = ${tongAll}</td>
+        </tr>`;}).join('') +
+      (()=>{
+        // Dòng "Tổng cộng theo tháng" — để kiểm tra nhanh: cộng dồn TẤT CẢ khoa ở mỗi tháng phải
+        // luôn xấp xỉ đúng tổng số học viên trong dự thảo (không phải cứ tăng dần hay tụt bất
+        // thường) — nếu lệch nhiều so với số học viên, cần xem lại lộ trình mẫu/ngày bắt đầu.
+        const sumExisting = months.map((mo,idx)=> rowsArg.reduce((s,r)=> s + r.existing[idx], 0));
+        const sumAdded = months.map((mo,idx)=> rowsArg.reduce((s,r)=> s + r.added[idx], 0));
+        const sumTotal = months.map((mo,idx)=> sumExisting[idx] + sumAdded[idx]);
+        const grandExisting = sumExisting.reduce((a,b)=>a+b,0);
+        const grandAdded = sumAdded.reduce((a,b)=>a+b,0);
+        return `
+        <tr style="background:#fff7e0;font-weight:bold;border-top:2px solid #d8a800">
+          <td style="position:sticky;left:0;z-index:1;background:#fff7e0"></td>
+          <td style="position:sticky;left:40px;z-index:1;background:#fff7e0">📊 Tổng cộng theo tháng</td>
+          ${sumTotal.map((n,idx)=>`<td style="text-align:center">${sumExisting[idx]}${sumAdded[idx]>0?' +'+sumAdded[idx]:''} = ${n}</td>`).join('')}
+          <td style="text-align:center;background:#ffe9a8">${grandExisting}${grandAdded>0?' +'+grandAdded:''} = ${grandExisting+grandAdded}</td>
+        </tr>`;
+      })();
+    }
     const overlay = el(`<div class="modal-overlay"><div class="modal" id="dh-modal" style="max-width:96vw;width:96vw;max-height:92vh;display:flex;flex-direction:column">
       <div class="row-flex" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-        <h3 style="margin:0">🌡️ Tải trọng dự thảo này theo khoa &amp; tháng (${activeDraft.length} học viên)</h3>
+        <h3 style="margin:0" id="dh-title">🌡️ Tải trọng dự thảo này theo khoa &amp; tháng (${activeDraft.length} học viên)</h3>
         <div class="row-flex" style="gap:6px">
           <button type="button" class="secondary" id="dh-zoom" title="Phóng to chữ và ô trong bảng cho dễ đọc">🔍+ Phóng to bảng</button>
           <button type="button" class="secondary" id="dh-export-excel">📊 Xuất Excel</button>
@@ -4060,47 +4137,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       <div style="overflow:auto;flex:1">
       <table id="dh-table" style="table-layout:fixed;font-size:12px">
         <thead><tr><th style="width:40px;text-align:center;position:sticky;top:0;left:0;z-index:3;background:#1f7a4d">STT</th><th style="width:170px;text-align:left;position:sticky;top:0;left:40px;z-index:3;background:#1f7a4d">Khoa/Phòng</th>${months.map(m=>`<th style="width:78px;text-align:center;position:sticky;top:0;z-index:2;background:#1f7a4d">${m.label}</th>`).join('')}<th style="width:70px;text-align:center;position:sticky;top:0;z-index:2;background:#1f7a4d">Tổng</th></tr></thead>
-        <tbody>${rows.map((r,idx0)=>{
-          const tongExisting = r.existing.reduce((a,b)=>a+b,0);
-          const tongAdded = r.added.reduce((a,b)=>a+b,0);
-          const tongAll = tongExisting + tongAdded;
-          return `
-          <tr>
-            <td style="position:sticky;left:0;z-index:1;background:#fff;text-align:center;color:#888">${idx0+1}</td>
-            <td style="position:sticky;left:40px;z-index:1;background:#fff;font-weight:bold">${r.name}</td>
-            ${r.total.map((n,idx)=>{
-              let bg = '#fff', color = '#999';
-              if (n>=7){ bg='#c0392b'; color='#fff'; }
-              else if (n>=5){ bg='#e67e22'; color='#fff'; }
-              else if (n>=3){ bg='#f1c40f'; color='#5a4a00'; }
-              else if (n>=1){ bg='#a8e6b8'; color='#1e6b34'; }
-              const addedN = r.added[idx];
-              const clickable = onEditTrainee && addedN>0;
-              return '<td style="text-align:center;background:'+bg+';color:'+color+(clickable?';cursor:pointer;text-decoration:underline dotted':'')+'"'+
-                (clickable ? ' data-heat-cell="'+r.khoaId+'::'+idx+'" title="Bấm để xem/sửa học viên đang chiếm chỗ ở đây"' : '') + '>'+
-                (n>0 ? (r.existing[idx]+(addedN>0?' <b>+'+addedN+'</b>':'')+' = '+n) : '') +
-              '</td>';
-            }).join('')}
-            <td style="text-align:center;font-weight:bold;background:#eef6ff">${tongExisting}${tongAdded>0?' <b>+'+tongAdded+'</b>':''} = ${tongAll}</td>
-          </tr>`;}).join('')}
-        ${(()=>{
-          // Dòng "Tổng cộng theo tháng" — để kiểm tra nhanh: cộng dồn TẤT CẢ khoa ở mỗi tháng phải
-          // luôn xấp xỉ đúng tổng số học viên trong dự thảo (không phải cứ tăng dần hay tụt bất
-          // thường) — nếu lệch nhiều so với số học viên, cần xem lại lộ trình mẫu/ngày bắt đầu.
-          const sumExisting = months.map((mo,idx)=> rows.reduce((s,r)=> s + r.existing[idx], 0));
-          const sumAdded = months.map((mo,idx)=> rows.reduce((s,r)=> s + r.added[idx], 0));
-          const sumTotal = months.map((mo,idx)=> sumExisting[idx] + sumAdded[idx]);
-          const grandExisting = sumExisting.reduce((a,b)=>a+b,0);
-          const grandAdded = sumAdded.reduce((a,b)=>a+b,0);
-          return `
-          <tr style="background:#fff7e0;font-weight:bold;border-top:2px solid #d8a800">
-            <td style="position:sticky;left:0;z-index:1;background:#fff7e0"></td>
-            <td style="position:sticky;left:40px;z-index:1;background:#fff7e0">📊 Tổng cộng theo tháng</td>
-            ${sumTotal.map((n,idx)=>`<td style="text-align:center">${sumExisting[idx]}${sumAdded[idx]>0?' +'+sumAdded[idx]:''} = ${n}</td>`).join('')}
-            <td style="text-align:center;background:#ffe9a8">${grandExisting}${grandAdded>0?' +'+grandAdded:''} = ${grandExisting+grandAdded}</td>
-          </tr>`;
-        })()}
-        </tbody>
+        <tbody id="dh-tbody">${buildTbodyHtml(rows, activeDraft)}</tbody>
       </table>
       </div>
       <p class="muted" style="margin-top:4px;font-size:12px">💡 Dòng "Tổng cộng theo tháng" nên xấp xỉ đúng ${activeDraft.length} (số học viên trong dự thảo) ở mỗi tháng — nếu 1 tháng nào đó thấp hơn hẳn hoặc cao hơn hẳn số này, có thể có học viên đang bị hở lịch hoặc dồn quá nhiều dòng vào cùng lúc, nên kiểm tra lại lộ trình của những người liên quan.</p>
@@ -4115,21 +4152,51 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       tbl.querySelectorAll('th, td').forEach(cell=>{ cell.style.padding = dhZoomed ? '10px 12px' : ''; });
       overlay.querySelector('#dh-zoom').textContent = dhZoomed ? '🔍- Thu nhỏ bảng' : '🔍+ Phóng to bảng';
     };
+    let liveRows = rows, liveActiveDraft = activeDraft, liveDraftStudentsAt = draftStudentsAt;
+    // Vẽ lại ĐÚNG PHẦN THÂN BẢNG (không đụng khung ngoài modal) sau khi lưu đổi khoa nhanh — an toàn
+    // hơn hẳn cách cũ (đóng rồi mở lại cả modal), tránh mọi rủi ro bị thoát nhầm ra ngoài.
+    function refreshTable(){
+      const fresh = computeRowsFresh();
+      liveRows = fresh.rowsNow;
+      liveActiveDraft = fresh.activeDraftNow;
+      liveDraftStudentsAt = fresh.draftStudentsAtNow;
+      const tbody = overlay.querySelector('#dh-tbody');
+      if (tbody) tbody.innerHTML = buildTbodyHtml(liveRows, liveActiveDraft);
+      const titleEl = overlay.querySelector('#dh-title');
+      if (titleEl) titleEl.textContent = '🌡️ Tải trọng dự thảo này theo khoa & tháng (' + liveActiveDraft.length + ' học viên)';
+      bindCellClicks();
+      if (dhZoomed){
+        const tbl = overlay.querySelector('#dh-table');
+        tbl.querySelectorAll('th, td').forEach(cell=>{ cell.style.padding = '10px 12px'; });
+      }
+    }
+    function bindCellClicks(){
+      overlay.querySelectorAll('[data-heat-cell]').forEach(td=>{
+        td.onclick = ()=>{
+          const [khoaId, moIdx] = td.getAttribute('data-heat-cell').split('::');
+          openCellPopup(khoaId, moIdx);
+        };
+      });
+    }
     if (onEditTrainee){
       const unitOptionsPop = (state.config.units||[]).slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
       function openCellPopup(khoaId, moIdx){
         const mo = months[+moIdx];
         const u = (state.config.units||[]).find(x=>x.id===khoaId);
-        const students = draftStudentsAt(khoaId, mo);
+        const students = liveDraftStudentsAt(khoaId, mo);
         if (!students.length) return;
-        const pop = el(`<div class="modal-overlay" style="z-index:10000"><div class="modal" style="max-width:760px;width:92vw">
-          <h3 style="margin-top:0">${u?u.name:''} — ${mo.label}</h3>
-          <p class="muted" style="margin-top:-6px">${students.length} học viên trong dự thảo đang chiếm chỗ ở đây. <b>Đổi khoa ngay tại đây</b> cho từng người (chỉ đổi đúng tháng này, các tháng khác của họ giữ nguyên) — không cần mở cả lộ trình dài.</p>
-          <div style="max-height:340px;overflow:auto">
+        const pop = el(`<div class="modal-overlay" style="z-index:10000"><div class="modal" id="cell-pop-modal" style="max-width:760px;width:92vw">
+          <div class="row-flex" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+            <h3 style="margin:0">${u?u.name:''} — ${mo.label}</h3>
+            <button type="button" class="secondary small-btn" id="cell-pop-zoom">🔍+ Phóng to</button>
+          </div>
+          <p class="muted" style="margin-top:6px">${students.length} học viên trong dự thảo đang chiếm chỗ ở đây. Gõ tên khoa để lọc, chọn khoa mới rồi bấm <b>"💾 Lưu"</b> để đổi (chỉ đổi đúng tháng này, các tháng khác của họ giữ nguyên) — không cần mở cả lộ trình dài.</p>
+          <div id="cell-pop-list" style="max-height:340px;overflow:visible">
             ${students.map(s=>`
               <div class="row-flex" style="justify-content:space-between;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--line);flex-wrap:nowrap">
                 <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${s.hoTen}">${s.hoTen}</span>
-                <select data-heat-quickchange="${s.idx}::${s.rowIdx}" style="max-width:260px;flex-shrink:0">${unitOptionsPop.map(uo=>`<option value="${uo.id}" ${uo.id===khoaId?'selected':''}>${uo.name}</option>`).join('')}</select>
+                <div data-heat-ssel="${s.idx}::${s.rowIdx}" style="width:220px;flex-shrink:0"></div>
+                <button type="button" class="secondary small-btn" data-heat-save="${s.idx}::${s.rowIdx}" style="white-space:nowrap;flex-shrink:0">💾 Lưu</button>
                 <button type="button" class="ghost small-btn" data-heat-edit="${s.idx}" data-heat-edit-row="${s.rowIdx}" style="white-space:nowrap;flex-shrink:0" title="Mở lộ trình cả năm của riêng người này nếu cần sửa thêm ngày/số tháng">✏️ Sửa cả lộ trình người này</button>
               </div>
             `).join('')}
@@ -4139,22 +4206,53 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           </div>
         </div></div>`);
         root.appendChild(pop);
+        let popZoomed = false;
+        pop.querySelector('#cell-pop-zoom').onclick = ()=>{
+          popZoomed = !popZoomed;
+          const modalEl = pop.querySelector('#cell-pop-modal');
+          const listEl = pop.querySelector('#cell-pop-list');
+          modalEl.style.maxWidth = popZoomed ? '960px' : '760px';
+          modalEl.style.fontSize = popZoomed ? '17px' : '';
+          listEl.querySelectorAll('span, .ssel-input').forEach(elx=>{ elx.style.fontSize = popZoomed ? '17px' : ''; });
+          listEl.querySelectorAll('.row-flex').forEach(r=>{ r.style.padding = popZoomed ? '12px 0' : '6px 0'; });
+          listEl.querySelectorAll('[data-heat-ssel]').forEach(box=>{ box.style.width = popZoomed ? '280px' : '220px'; });
+          listEl.querySelectorAll('button').forEach(b=>{ b.style.fontSize = popZoomed ? '15px' : ''; b.style.padding = popZoomed ? '8px 14px' : ''; });
+          pop.querySelector('#cell-pop-zoom').textContent = popZoomed ? '🔍- Thu nhỏ' : '🔍+ Phóng to';
+        };
         pop.querySelector('#heat-pop-close').onclick = ()=> pop.remove();
-        pop.querySelectorAll('[data-heat-quickchange]').forEach(sel=>{
-          sel.onchange = ()=>{
-            const [dIdxStr, rIdxStr] = sel.getAttribute('data-heat-quickchange').split('::');
-            const dIdx = +dIdxStr, rIdx = +rIdxStr;
-            const newU = (state.config.units||[]).find(x=>x.id===sel.value);
-            if (!newU || !draft[dIdx] || !draft[dIdx].rows[rIdx]) return;
-            draft[dIdx].rows[rIdx].khoaId = newU.id;
-            draft[dIdx].rows[rIdx].khoaTen = newU.name;
-            showToast('Đã đổi khoa tháng '+mo.label+' của "'+draft[dIdx].hoTen+'" sang "'+newU.name+'".');
-            // Vẽ lại toàn bộ bảng tải trọng + đóng popup hiện tại, để số liệu (và các ô màu) cập
-            // nhật đúng ngay lập tức — người dùng có thể bấm tiếp ô khác để xử lý tiếp.
-            pop.remove();
-            overlay.remove();
-            openDraftHeatmapModal(draft, onEditTrainee, onDraftChanged);
-            if (typeof onDraftChanged === 'function') onDraftChanged();
+        // Ô chọn khoa dạng GÕ-ĐỂ-LỌC (thay cho <select> liệt kê cứng cả list dài khó dò) — mỗi dòng
+        // học viên có 1 ô riêng, nhớ lựa chọn hiện tại (getValue) để nút "💾 Lưu" đọc đúng giá trị.
+        const sselHandles = {};
+        pop.querySelectorAll('[data-heat-ssel]').forEach(box=>{
+          const key = box.getAttribute('data-heat-ssel');
+          sselHandles[key] = createSearchableSelect(box, unitOptionsPop.map(uo=>({ id:uo.id, label:uo.name })), {
+            placeholder: 'Gõ tên khoa để lọc...',
+            initialId: khoaId,
+          });
+        });
+        pop.querySelectorAll('[data-heat-save]').forEach(btn=>{
+          btn.onclick = ()=>{
+            try {
+              const key = btn.getAttribute('data-heat-save');
+              const chosenId = sselHandles[key] ? sselHandles[key].getValue() : '';
+              const [dIdxStr, rIdxStr] = key.split('::');
+              const dIdx = +dIdxStr, rIdx = +rIdxStr;
+              const newU = (state.config.units||[]).find(x=>x.id===chosenId);
+              if (!newU){ alert('Chưa chọn đúng khoa hợp lệ trong ô tìm kiếm — gõ tên khoa rồi bấm chọn đúng dòng trong danh sách gợi ý trước khi Lưu.'); return; }
+              if (!draft[dIdx] || !draft[dIdx].rows[rIdx]){ alert('Không tìm thấy đúng học viên/dòng để lưu — có thể dự thảo vừa bị đổi ở nơi khác. Anh đóng bảng này và bấm lại vào ô đang xem.'); return; }
+              draft[dIdx].rows[rIdx].khoaId = newU.id;
+              draft[dIdx].rows[rIdx].khoaTen = newU.name;
+              const hoTenLuu = draft[dIdx].hoTen;
+              // Đóng popup rồi VẼ LẠI ĐÚNG PHẦN BẢNG (không đóng/mở lại cả modal như trước) — bảng tải
+              // trọng vẫn ở nguyên đó để anh xem tiếp ngay, không bị thoát ra ngoài nữa.
+              pop.remove();
+              refreshTable();
+              showToast('Đã lưu: đổi khoa tháng '+mo.label+' của "'+hoTenLuu+'" sang "'+newU.name+'".');
+              if (typeof onDraftChanged === 'function') onDraftChanged();
+            } catch(e){
+              console.error('Lỗi khi lưu đổi khoa nhanh:', e);
+              alert('Có lỗi khi lưu, vui lòng thử lại. Nếu vẫn lỗi, dùng nút "✏️ Sửa cả lộ trình người này" để đổi khoa theo cách khác.');
+            }
           };
         });
         pop.querySelectorAll('[data-heat-edit]').forEach(b=>{
@@ -4167,12 +4265,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           };
         });
       }
-      overlay.querySelectorAll('[data-heat-cell]').forEach(td=>{
-        td.onclick = ()=>{
-          const [khoaId, moIdx] = td.getAttribute('data-heat-cell').split('::');
-          openCellPopup(khoaId, moIdx);
-        };
-      });
+      bindCellClicks();
     }
     overlay.querySelector('#dh-export-excel').onclick = async ()=>{
       // Xuất đúng bảng đang xem (khoa × 12 tháng, TÍNH CẢ khoa chưa có học viên nào), sheet đầu tô
@@ -7596,7 +7689,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
                   }
                   return `<tr data-row-key="${i}-${j}">
                     <td style="text-align:center">${label}</td>
-                    <td><select data-edit-khoa="${i}-${j}">${unitOptions.map(u=>`<option value="${u.id}" ${u.id===r.khoaId?'selected':''}>${u.name}</option>`).join('')}</select></td>
+                    <td><div data-edit-khoa-ssel="${i}-${j}" style="min-width:180px"></div></td>
                     <td style="text-align:center">${j===0 ? `<input type="date" data-edit-tungay="${i}" value="${r.tuNgay||''}" style="width:130px">` : fmtDate(r.tuNgay)}</td>
                     <td style="text-align:center">${fmtDate(r.denNgay)}</td>
                     <td><input type="number" step="0.5" min="0.5" data-edit-thang="${i}-${j}" value="${r.soThang}" style="width:70px" /></td>
@@ -7634,7 +7727,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             targetRow.style.outline = '3px solid #f1c40f';
             targetRow.style.outlineOffset = '-2px';
             setTimeout(()=>{ targetRow.style.outline = ''; targetRow.style.outlineOffset = ''; }, 2500);
-            const sel = targetRow.querySelector('select[data-edit-khoa]');
+            const sel = targetRow.querySelector('.ssel-input');
             if (sel) sel.focus();
           } else {
             const cards = overlay.querySelectorAll('[data-draft-cb]');
@@ -7738,12 +7831,19 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           renderStep2(specialtyWarnings, step2OnlyIdx);
         };
       });
-      body.querySelectorAll('[data-edit-khoa]').forEach(sel=>{
-        sel.onchange = ()=>{
-          const [i,j] = sel.getAttribute('data-edit-khoa').split('-').map(Number);
-          draft[i].rows[j].khoaId = sel.value;
-          draft[i].rows[j].khoaTen = (unitOptions.find(u=>u.id===sel.value)||{}).name || '';
-        };
+      body.querySelectorAll('[data-edit-khoa-ssel]').forEach(box=>{
+        const key = box.getAttribute('data-edit-khoa-ssel');
+        const [i,j] = key.split('-').map(Number);
+        const currentKhoaId = draft[i] && draft[i].rows[j] ? draft[i].rows[j].khoaId : '';
+        createSearchableSelect(box, unitOptions.map(u=>({ id:u.id, label:u.name })), {
+          placeholder: 'Gõ tên khoa để lọc...',
+          initialId: currentKhoaId,
+          onSelect: (id, opt)=>{
+            if (!id || !draft[i] || !draft[i].rows[j]) return;
+            draft[i].rows[j].khoaId = id;
+            draft[i].rows[j].khoaTen = opt ? opt.label : '';
+          },
+        });
       });
       body.querySelectorAll('[data-edit-thang]').forEach(inp=>{
         inp.onchange = ()=>{
@@ -7886,7 +7986,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         ${traCuuKetQua ? `
           <div class="row-flex" style="justify-content:space-between;align-items:center;margin-top:14px;flex-wrap:wrap;gap:8px">
             <p style="margin:0"><b>${traCuuKetQua.length}</b> học viên khớp điều kiện đang lọc:</p>
-            ${traCuuKetQua.length ? `<button type="button" class="secondary" id="tc-export-word">🖨️ Xuất Word (thuần chữ, an toàn mọi máy)</button><button type="button" class="ghost small-btn" id="tc-xemtruoc-cochuky">👁 Xem trước có chữ ký (để in/lưu PDF)</button><button type="button" class="ghost small-btn" id="tc-export-khlk" title="Xuất Kế hoạch luân khoa 12 tháng (mỗi học viên 1 trang) cho tất cả học viên đang lọc">📅 Xuất Kế hoạch luân khoa</button><button type="button" class="secondary" id="tc-export-excel-list">📊 Xuất Excel (danh sách học viên)</button>` : ''}
+            ${traCuuKetQua.length ? `<button type="button" class="secondary" id="tc-export-word">🖨️ Xuất Word (thuần chữ, an toàn mọi máy)</button><button type="button" class="ghost small-btn" id="tc-xemtruoc-cochuky">👁 Xem trước có chữ ký (để in/lưu PDF)</button><button type="button" class="ghost small-btn" id="tc-export-khlk" title="Xuất Kế hoạch luân khoa 12 tháng (mỗi học viên 1 trang) cho tất cả học viên đang lọc">📅 Xuất Kế hoạch luân khoa</button><button type="button" class="secondary" id="tc-export-theokhoa" title="1 file Word — mỗi khoa có học viên 1 trang riêng, liệt kê đúng học viên + từ ngày/đến ngày của khoa đó, để in gửi kèm cho từng khoa">🖨️ Xuất Word theo từng khoa (gửi các khoa)</button><button type="button" class="secondary" id="tc-export-excel-list">📊 Xuất Excel (danh sách học viên)</button>` : ''}
           </div>
           ${!traCuuKetQua.length ? '<p class="muted">Không tìm thấy học viên nào trong khoảng thời gian/khoa đã chọn.</p>' : `
           <table>
@@ -8060,6 +8160,51 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       const rows = Object.keys(byKhoaCount).sort((a,b)=>a.localeCompare(b)).map(k=>[k, byKhoaCount[k].tong, byKhoaCount[k].daPhanCong, byKhoaCount[k].choPhanCong]);
       rows.push(['Tổng cộng', traCuuKetQua.length, traCuuKetQua.filter(x=>x.r.trangThai==='Đã phân công').length, traCuuKetQua.filter(x=>x.r.trangThai!=='Đã phân công').length]);
       exportXlsxGeneric(headers, rows, 'tong_hop_so_luong_theo_khoa_' + todayISO() + '.xlsx', 'TongHopKhoa');
+    };
+    const btnTcExportTheoKhoa = content.querySelector('#tc-export-theokhoa');
+    if (btnTcExportTheoKhoa) btnTcExportTheoKhoa.onclick = ()=>{
+      // Gộp học viên đang lọc theo TỪNG KHOA — mỗi khoa 1 trang riêng (ngắt trang), liệt kê đúng
+      // học viên + khoảng thời gian thực hành của khoa đó, để in ra và gửi kèm/thông báo cho từng
+      // khoa biết mình sẽ nhận những học viên nào, từ ngày nào đến ngày nào.
+      if (!traCuuKetQua.length){ alert('Không có học viên nào trong danh sách đang lọc để xuất.'); return; }
+      const byKhoa = {};
+      traCuuKetQua.forEach(({t,r})=>{
+        const key = r.khoaTen || '(Chưa rõ khoa)';
+        if (!byKhoa[key]) byKhoa[key] = [];
+        byKhoa[key].push({ t, r });
+      });
+      const tenKhoaList = Object.keys(byKhoa).sort((a,b)=>a.localeCompare(b,'vi'));
+      const pages = tenKhoaList.map((khoaTen, pageIdx)=>{
+        const items = byKhoa[khoaTen].slice().sort((a,b)=>(a.r.tuNgay||'').localeCompare(b.r.tuNgay||''));
+        const rowsHtml = items.map(({t,r},i)=>{
+          const soThang = (r.soThang!=null && r.soThang!=='') ? parseFloat(r.soThang) : monthsDecimal(r.tuNgay, r.denNgay);
+          return '<tr><td style="text-align:center">'+(i+1)+'</td><td>'+(t.hoTen||'')+'</td>' +
+            '<td style="text-align:center">'+fmtDate(r.tuNgay)+'</td><td style="text-align:center">'+fmtDate(r.denNgay)+'</td>' +
+            '<td style="text-align:center">'+(isNaN(soThang)?'':soThang.toFixed(1))+'</td>' +
+            '<td>'+(r.trangThai==='Đã phân công' ? (r.nguoiHuongDan||'') : '<i>Chưa phân công</i>')+'</td></tr>';
+        }).join('');
+        return (pageIdx>0 ? '<p style="page-break-before:always;mso-page-break-before:always;font-size:1pt;line-height:1pt;margin:0">&nbsp;</p>' : '') +
+          '<table class="kv" style="table-layout:fixed"><colgroup><col style="width:42%"><col style="width:58%"></colgroup><tr>' +
+            '<td style="width:42%;vertical-align:top" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:11pt;white-space:nowrap" nowrap="nowrap">BỆNH VIỆN ĐA KHOA TRUNG TÂM</div>' +
+              '<div style="text-align:center;font-weight:bold;font-size:11pt;white-space:nowrap" nowrap="nowrap">TỈNH GIA LAI</div></td>' +
+            '<td style="width:58%;vertical-align:top" nowrap="nowrap"><div style="text-align:center;font-weight:bold;font-size:12.5pt;white-space:nowrap" nowrap="nowrap">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>' +
+              '<div style="text-align:center;font-weight:bold;text-decoration:underline;white-space:nowrap" nowrap="nowrap">Độc lập - Tự do - Hạnh phúc</div></td>' +
+          '</tr></table>' +
+          '<div class="doc-title">DANH SÁCH HỌC VIÊN THỰC HÀNH</div>' +
+          '<div class="doc-trichyeu">Tại ' + khoaTen + '</div>' +
+          '<p style="margin-top:14px">Kính gửi: <b>' + khoaTen + '</b></p>' +
+          '<p>Phòng Chỉ đạo tuyến thông báo danh sách học viên thực hành để cấp Giấy phép hành nghề sẽ thực hành tại khoa trong khoảng thời gian dưới đây, đề nghị khoa bố trí người hướng dẫn và tạo điều kiện cho học viên thực hành theo đúng kế hoạch:</p>' +
+          '<table class="data"><thead><tr><th style="width:6%">STT</th><th style="width:26%">Họ và tên học viên</th><th style="width:15%">Từ ngày</th><th style="width:15%">Đến ngày</th><th style="width:12%">Số tháng</th><th style="width:26%">Người hướng dẫn</th></tr></thead>' +
+          '<tbody>' + rowsHtml + '</tbody></table>' +
+          '<table class="sign-block"><tr><td style="width:50%">&nbsp;</td><td style="width:50%">Gia Lai, ngày ..... tháng ..... năm ' + new Date().getFullYear() + '<br>TRƯỞNG KHOA<br><span class="sign-note">(Ký, ghi rõ họ tên)</span><br><br><br><br></td></tr></table>';
+      }).join('');
+      exportWordCustomDoc(
+        'DANH SÁCH HỌC VIÊN THỰC HÀNH THEO TỪNG KHOA',
+        pages,
+        'danh_sach_hoc_vien_theo_khoa_' + todayISO() + '.doc',
+        { landscape:false, margins:{ top:2, right:1.5, bottom:2, left:3 } }
+      );
+      showToast('Đã xuất file — gồm ' + tenKhoaList.length + ' khoa, mỗi khoa 1 trang riêng, có thể in và gửi kèm cho từng khoa.');
     };
     const btnTcExportWord = content.querySelector('#tc-export-word');
     if (btnTcExportWord) btnTcExportWord.onclick = ()=>{
